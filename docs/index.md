@@ -2,34 +2,56 @@
 
 ## Read This First
 
-Start here for project documentation orientation.
+This repository contains a reusable cmux orchestration skill and its project-scoped Pi subagent configuration.
 
 Before planning or implementation:
 
 1. Read this file.
 2. Read `docs/principles.md`.
-3. Read any relevant plan/spec docs listed below.
-4. Read root AI instruction files if working as an AI agent.
+3. Read the relevant skill and agent configuration.
+4. Read the root AI instruction files when working as an agent.
+5. Run the contract test before submitting changes.
 
 ## Documentation SSOT
 
 - Change principles: `docs/principles.md`
-- Feature plans/specs: `docs/plan/` or project equivalent
-- Roadmap/backlog: <path if present>
-- Completed work/changelog: <path if present>
-- AI workflow instructions: root instruction files such as `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`
+- Feature plans/specs: `docs/plan/` when project-local plans are added
+- Completed work/changelog: not currently maintained in this repository
+- AI workflow instructions: `AGENTS.md` and `CLAUDE.md`
 
-## Directory Map
+## Repository Map
 
-Describe each docs directory.
+- `docs/` — documentation entry point and repository-wide change principles.
+- `skills/` — reusable Pi skills. The cmux orchestration skill is at `skills/cmux-agent-orchestration/SKILL.md`.
+- `.pi/agents/` — project-scoped pi-subagents definitions. The thin supervisor is at `.pi/agents/cmux-agent-supervisor.md`.
+- `tests/` — contract and regression checks. The orchestration contract test is `tests/cmux-agent-orchestration-contract.sh`.
 
 ## File Catalog
 
-List each important doc and what it is for.
+| Path | Purpose |
+| --- | --- |
+| `docs/index.md` | First-stop documentation map and repository workflow. |
+| `docs/principles.md` | Source of truth for validation, testing, and maintainability principles. |
+| `AGENTS.md` | Root agent guidance pointing to the documentation SSOT. |
+| `CLAUDE.md` | Claude-compatible pointer to the same documentation SSOT. |
+| `skills/cmux-agent-orchestration/SKILL.md` | Marker-based cmux executor contract, approval routing, lifecycle, failure handling, and verification scenarios. |
+| `.pi/agents/cmux-agent-supervisor.md` | Project-scoped low-cost supervisor definition and tool/skill boundaries. |
+| `tests/cmux-agent-orchestration-contract.sh` | Static contract validation for markers, hooks, pane targeting, cwd checks, nonce framing, and supervisor restrictions. |
+
+## Agent Workflow
+
+For orchestration changes:
+
+1. Keep the main agent as the decision-maker and the supervisor as a thin launcher/monitor/relay.
+2. Reuse the official `cmux` and `cmux-workspace` skills for pane control; do not duplicate pane logic here.
+3. Preserve the existing agy wrapper and PostInvocation hook contract.
+4. Run `bash tests/cmux-agent-orchestration-contract.sh` and `git diff --check`.
+5. For live validation, use a disposable directory and cmux pane; never test destructive or spending actions.
+6. Record new verification or runtime limitations in the relevant PR or follow-up documentation.
 
 ## How To Add or Update Docs
 
-- Add new plans/specs in the appropriate docs folder.
-- Update this index whenever docs are added, removed, renamed, or repurposed.
-- Keep standards in `docs/principles.md`; do not duplicate them across many files.
-- Update roadmap/completed-work docs alongside implementation changes where applicable.
+- Add repository-local plans/specs under `docs/plan/`.
+- Update this index whenever docs, skills, agent definitions, or test entry points are added, removed, renamed, or repurposed.
+- Keep repo-wide standards in `docs/principles.md`; do not duplicate them across root instruction files.
+- Keep root AI instruction files concise and pointing to this index and `docs/principles.md`.
