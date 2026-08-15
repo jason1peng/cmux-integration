@@ -23,7 +23,7 @@ Before planning or implementation:
 
 - `docs/` — documentation entry point and repository-wide change principles.
 - `skills/` — reusable Pi skills. The cmux orchestration skill is at `skills/cmux-agent-orchestration/SKILL.md`.
-- `.pi/agents/` — project-scoped pi-subagents definitions. The thin supervisor is at `.pi/agents/cmux-agent-supervisor.md`.
+- `.pi/agents/` — project-scoped pi-subagents definitions. The agy supervisor is at `.pi/agents/agy.md` (aliases: `cmux-agent-supervisor`).
 - `tests/` — contract and regression checks. The orchestration contract test is `tests/cmux-agent-orchestration-contract.sh`.
 
 ## File Catalog
@@ -35,7 +35,7 @@ Before planning or implementation:
 | `AGENTS.md` | Root agent guidance pointing to the documentation SSOT. |
 | `CLAUDE.md` | Claude-compatible pointer to the same documentation SSOT. |
 | `skills/cmux-agent-orchestration/SKILL.md` | Marker-based cmux executor contract, dedicated `cmux-agent` workspace policy, project-labeled new panes, an executor-ready gate before job submission, hybrid push+pull monitoring, escalation discretion for routine prompts, approval routing, lifecycle, failure handling, and verification scenarios. |
-| `.pi/agents/cmux-agent-supervisor.md` | Project-scoped low-cost supervisor definition and tool/skill boundaries. |
+| `.pi/agents/agy.md` | Project-scoped low-cost supervisor definition (`agy`, aliases `cmux-agent-supervisor`) and tool/skill boundaries. |
 | `tests/cmux-agent-orchestration-contract.sh` | Static contract validation for markers, hooks, pane targeting, cwd checks, nonce framing, and supervisor restrictions. |
 
 ## Agent Workflow

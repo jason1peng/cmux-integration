@@ -3,7 +3,7 @@ set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 skill="$root/skills/cmux-agent-orchestration/SKILL.md"
-agent="$root/.pi/agents/cmux-agent-supervisor.md"
+agent="$root/.pi/agents/agy.md"
 
 [[ -s "$skill" ]]
 [[ -s "$agent" ]]
@@ -49,6 +49,8 @@ for contract in \
 done
 
 # The supervisor must load the local skill and remain a thin, non-recursive child.
+grep -Fq -- 'name: agy' "$agent"
+grep -Fq -- 'aliases: cmux-agent-supervisor' "$agent"
 grep -Fq -- 'skills: cmux-agent-orchestration, cmux, cmux-workspace' "$agent"
 grep -Fq -- 'maxSubagentDepth: 0' "$agent"
 grep -Fq -- 'tools: read, grep, find, ls, bash' "$agent"
