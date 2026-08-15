@@ -34,7 +34,7 @@ Before planning or implementation:
 | `docs/principles.md` | Source of truth for validation, testing, and maintainability principles. |
 | `AGENTS.md` | Root agent guidance pointing to the documentation SSOT. |
 | `CLAUDE.md` | Claude-compatible pointer to the same documentation SSOT. |
-| `skills/cmux-agent-orchestration/SKILL.md` | Marker-based cmux executor contract, approval routing, lifecycle, failure handling, and verification scenarios. |
+| `skills/cmux-agent-orchestration/SKILL.md` | Marker-based cmux executor contract, dedicated `cmux-agent` workspace policy, project-labeled new panes, approval routing, lifecycle, failure handling, and verification scenarios. |
 | `.pi/agents/cmux-agent-supervisor.md` | Project-scoped low-cost supervisor definition and tool/skill boundaries. |
 | `tests/cmux-agent-orchestration-contract.sh` | Static contract validation for markers, hooks, pane targeting, cwd checks, nonce framing, and supervisor restrictions. |
 
@@ -44,10 +44,11 @@ For orchestration changes:
 
 1. Keep the main agent as the decision-maker and the supervisor as a thin launcher/monitor/relay.
 2. Reuse the official `cmux` and `cmux-workspace` skills for pane control; do not duplicate pane logic here.
-3. Preserve the existing agy wrapper and PostInvocation hook contract.
-4. Run `bash tests/cmux-agent-orchestration-contract.sh` and `git diff --check`.
-5. For live validation, use a disposable directory and cmux pane; never test destructive or spending actions.
-6. Record new verification or runtime limitations in the relevant PR or follow-up documentation.
+3. Keep all executor jobs in the reusable `cmux-agent` workspace, always create a new pane/surface per job, and label that surface with the authoritative project name plus an ordinal such as `cmux-integration (1)` or `cmux-integration (2)`.
+4. Preserve the existing agy wrapper and PostInvocation hook contract.
+5. Run `bash tests/cmux-agent-orchestration-contract.sh` and `git diff --check`.
+6. For live validation, use a disposable directory and cmux pane; never test destructive or spending actions.
+7. Record new verification or runtime limitations in the relevant PR or follow-up documentation.
 
 ## How To Add or Update Docs
 

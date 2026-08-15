@@ -27,6 +27,7 @@ task: <exact delegated task>
 expected_markers: GOAL_COMPLETE, NEED_APPROVAL, QUESTION, ERROR, STUCK
 artifact_expectations: <paths or description>
 cwd: <absolute executor working directory>
+project_name: <authoritative working project/repository label, independent of worktree path>
 worktree_identity: <expected repository root and optional branch/ref>
 timeout_seconds: <finite integer>
 job_nonce: <fresh cryptographically random nonce>
@@ -54,20 +55,22 @@ If a marker is absent, the supervisor reports `RUNNING` only while the phase dea
 
 ## Pane and executor lifecycle
 
-1. Reuse an existing dedicated executor pane when its identity and prior job are known; otherwise create one with the `cmux`/`cmux-workspace` skills. Do not reimplement pane discovery or control here.
-2. Confirm the pane and its surface are alive before launch. Record stable workspace/pane/surface identifiers and the working directory. Every launch, input, approval response, and stop command MUST pass the recorded executor surface explicitly (for example, `--surface <executor-surface>`); never rely on whichever surface is focused.
-3. Before launch, verify the executor surface's `pwd -P` equals the contract `cwd`. If the task is tied to a checkout, verify `git -C <cwd> rev-parse --show-toplevel` and the expected branch/ref match `worktree_identity`; stop and escalate on mismatch. Include the same cwd/worktree identity in the executor prompt.
-4. Confirm the required wrapper and hook are executable. The launch MUST be cwd-bound, not a bare wrapper invocation: send a command equivalent to the following to the explicit executor surface, with `<contract cwd>` shell-quoted as one path:
+1. Enumerate workspaces with the official `cmux`/`cmux-workspace` skills and find the exact workspace named `cmux-agent`. Reuse that workspace when it exists; otherwise create it with `cmux new-workspace --name cmux-agent --description "Dedicated executor workspace" --cwd <contract cwd> --focus false`. Do not select a different workspace by focus or invent workspace-control logic.
+2. Always create a new terminal pane/surface for every new executor job, even when reusing `cmux-agent`; never reuse a prior executor pane. Use `cmux new-pane --workspace <cmux-agent-workspace> --type terminal --direction right --focus false` and record the returned workspace/pane/surface identifiers.
+3. Treat the job contract's `project_name` as authoritative; never derive the visible label from a temporary worktree basename. Enumerate surfaces in `cmux-agent` and choose the next available positive ordinal for that project, starting at 1. Label the new executor terminal surface with `cmux rename-tab --surface <executor-surface> "<project_name> (<ordinal>)"`, producing titles such as `cmux-integration (1)`, `cmux-integration (2)`, and `cmux-integration (3)`. Allocate labels serially; if a race creates a duplicate, keep surface IDs as the routing identity and reassign the later label before launch. A pane container has no independent name in cmux; its terminal surface/tab title is the project label.
+4. Confirm the new pane and surface are alive before launch. Every launch, input, approval response, and stop command MUST pass the recorded executor workspace and surface explicitly (for example, `--workspace <cmux-agent-workspace> --surface <executor-surface>`); never rely on whichever workspace or surface is focused.
+5. Before the pre-launch validation, initialize the new surface explicitly with `cmux send --workspace <cmux-agent-workspace> --surface <executor-surface> "cd -- <contract cwd>\n"`; fail closed if that setup command cannot be sent. Then re-read the surface and verify its `pwd -P` equals the contract `cwd`. If the task is tied to a checkout, verify `git -C <cwd> rev-parse --show-toplevel` and the expected branch/ref match `worktree_identity`; stop and escalate on mismatch. Include the same cwd, authoritative project name, selected ordinal, and worktree identity in the executor prompt.
+6. Confirm the required wrapper and hook are executable. The launch MUST be cwd-bound, not a bare wrapper invocation: send a command equivalent to the following to the explicit executor surface, with `<contract cwd>` shell-quoted as one path:
 
    ```bash
    cd -- <contract cwd> && exec ~/bin/agy-with-permissions
    ```
 
    Re-check `pwd -P` and the worktree identity after establishing the cwd and before sending the executor prompt. If either check fails, stop and escalate rather than launching. The wrapper expands to `agy --dangerously-skip-permissions`; pass the executor prompt as its arguments/input using the existing cmux send controls.
-5. Use the existing PostInvocation hook named `agy-result-hook`, configured as a **PostInvocation** hook, invoking `~/bin/agy-hook-notify.sh`. Its transcript source is `~/agi-result.txt`. Do not call it `cmux-auto-approve`, and do not treat it as a PreInvocation hook.
-6. Generate a fresh cryptographically random `job_nonce` for every job. Require the executor to emit `<!-- CMX_JOB <job_nonce> -->` immediately before each lifecycle marker. Before launching, record the transcript file identity, byte offset, and modification time. Poll only bytes appended after that offset; if the file is truncated/replaced, stop and escalate rather than scanning old content. Accept a marker only when the current nonce appears in the same fresh appended segment immediately before it. This per-job framing prevents stale markers from a previous invocation in the global `~/agi-result.txt` from completing the new job.
-7. Send the formatted job prompt to the executor surface using the explicit surface ID and start a monotonic deadline. Poll the transcript file with bounded intervals using file reads/stat; use screen reads only to detect pane loss or confirm that input was sent.
-8. On completion, copy or reference the fresh job transcript segment and collect artifacts named by the executor. Do not report completion until the nonce-framed marker and expected artifact evidence are present.
+7. Use the existing PostInvocation hook named `agy-result-hook`, configured as a **PostInvocation** hook, invoking `~/bin/agy-hook-notify.sh`. Its transcript source is `~/agi-result.txt`. Do not call it `cmux-auto-approve`, and do not treat it as a PreInvocation hook.
+8. Generate a fresh cryptographically random `job_nonce` for every job. Require the executor to emit `<!-- CMX_JOB <job_nonce> -->` immediately before each lifecycle marker. Before launching, record the transcript file identity, byte offset, and modification time. Poll only bytes appended after that offset; if the file is truncated/replaced, stop and escalate rather than scanning old content. Accept a marker only when the current nonce appears in the same fresh appended segment immediately before it. This per-job framing prevents stale markers from a previous invocation in the global `~/agi-result.txt` from completing the new job.
+9. Send the formatted job prompt to the recorded executor workspace and surface using explicit IDs and start a monotonic deadline. Poll the transcript file with bounded intervals using file reads/stat; use screen reads only to detect pane loss or confirm that input was sent.
+10. On completion, copy or reference the fresh job transcript segment and collect artifacts named by the executor. Do not report completion until the nonce-framed marker and expected artifact evidence are present.
 
 ## Monitoring and routing
 
@@ -91,7 +94,7 @@ When approval or clarification arrives, send only the main agent's decision to t
 Return a concise result containing:
 
 - terminal state: `GOAL_COMPLETE`, `NEED_APPROVAL`, `QUESTION`, `ERROR`, `STUCK`, or `TIMEOUT`;
-- executor, workspace/pane/surface, and transcript source;
+- executor, dedicated workspace name/ref, project-labeled pane/surface, and transcript source;
 - marker text and the relevant transcript excerpt;
 - artifacts captured and any missing expected artifacts;
 - approvals/questions requiring the main agent;
@@ -116,10 +119,11 @@ Claude Code and multi-executor coordination are deferred; do not add them to the
 
 Exercise the contract with a disposable pane and bounded test jobs before relying on it:
 
-1. A deterministic multi-step job reaches `GOAL_COMPLETE` and returns an artifact.
-2. A job emits `NEED_APPROVAL` in a tool-free turn; the supervisor relays it and does not execute the blocked action before an explicit decision.
-3. A job emits `QUESTION`; the question and answer round-trip without supervisor invention.
-4. A silent, stuck, dead-pane, unreadable-hook, or timed-out job terminates and reports instead of looping.
-5. A transcript containing stale markers does not complete a newly launched job.
+1. A deterministic multi-step job reaches `GOAL_COMPLETE` in a new project-labeled pane in the reused or newly created `cmux-agent` workspace and returns an artifact.
+2. A second job reuses the same `cmux-agent` workspace but creates a different new pane/surface with the correct project label.
+3. A job emits `NEED_APPROVAL` in a tool-free turn; the supervisor relays it and does not execute the blocked action before an explicit decision.
+4. A job emits `QUESTION`; the question and answer round-trip without supervisor invention.
+5. A silent, stuck, dead-pane, unreadable-hook, or timed-out job terminates and reports instead of looping.
+6. A transcript containing stale markers does not complete a newly launched job.
 
 Do not run destructive or spending scenarios as validation. Record the exact command, timeout, marker, artifact, and observed result for each live probe.
