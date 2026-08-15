@@ -34,7 +34,7 @@ Before planning or implementation:
 | `docs/principles.md` | Source of truth for validation, testing, and maintainability principles. |
 | `AGENTS.md` | Root agent guidance pointing to the documentation SSOT. |
 | `CLAUDE.md` | Claude-compatible pointer to the same documentation SSOT. |
-| `skills/cmux-agent-orchestration/SKILL.md` | Marker-based cmux executor contract, dedicated `cmux-agent` workspace policy, project-labeled new panes, approval routing, lifecycle, failure handling, and verification scenarios. |
+| `skills/cmux-agent-orchestration/SKILL.md` | Marker-based cmux executor contract, dedicated `cmux-agent` workspace policy, project-labeled new panes, an executor-ready gate before job submission, hybrid push+pull monitoring, escalation discretion for routine prompts, approval routing, lifecycle, failure handling, and verification scenarios. |
 | `.pi/agents/cmux-agent-supervisor.md` | Project-scoped low-cost supervisor definition and tool/skill boundaries. |
 | `tests/cmux-agent-orchestration-contract.sh` | Static contract validation for markers, hooks, pane targeting, cwd checks, nonce framing, and supervisor restrictions. |
 

@@ -54,6 +54,43 @@ grep -Fq -- 'maxSubagentDepth: 0' "$agent"
 grep -Fq -- 'tools: read, grep, find, ls, bash' "$agent"
 ! grep -Fq -- 'tools: subagent' "$agent"
 
+# The executor-ready gate must exist: never send the job prompt to an unready executor.
+for gate in \
+  'executor-ready gate' \
+  'cmux read-screen' \
+  'ready prompt' \
+  'Never send the job prompt' \
+  'bounded readiness deadline' \
+  'do not guess an answer'; do
+  grep -Fq -- "$gate" "$skill"
+done
+grep -Fq -- 'executor-ready gate' "$agent"
+
+# Monitoring must combine push (transcript hook) and pull (pane screen) channels.
+for hybrid in \
+  'cmux read-screen --workspace <cmux-agent-workspace> --surface <executor-surface>' \
+  'Classify the screen state' \
+  '`idle`' \
+  '`working`' \
+  '`question`' \
+  'is not completion'; do
+  grep -Fq -- "$hybrid" "$skill"
+done
+grep -Fq -- 'push + pull' "$agent"
+
+# Escalation discretion: routine TUI prompts may be self-handled, consequential ones must escalate.
+for policy in \
+  'Routine, non-consequential, and reversible' \
+  'feedback surveys' \
+  'safest option' \
+  'MUST be recorded' \
+  'trust/authorization' \
+  'always escalate'; do
+  grep -Fq -- "$policy" "$skill"
+done
+grep -Fq -- 'safest option' "$agent"
+grep -Fq -- 'recorded in the result' "$agent"
+
 # The supervisor must not rely on focused-pane state or an unframed global transcript.
 grep -Fq -- 'explicit executor surface' "$skill"
 grep -Fq -- 'stale markers' "$skill"

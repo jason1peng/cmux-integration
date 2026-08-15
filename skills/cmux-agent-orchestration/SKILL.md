@@ -15,6 +15,7 @@ Use this skill when the main agent delegates a long-running interactive-agent jo
 - `NEED_APPROVAL` is a tool-free checkpoint: emit the marker and stop/pause before invoking the consequential tool or action. Never emit the marker and perform the blocked action in the same executor turn; PostInvocation observation must occur before any consequential execution.
 - Never infer state from an arbitrary terminal dump. The transcript hook is the source of truth. A pane is used for lifecycle/death detection and sending input only.
 - Never silently answer a question, approve a marker, broaden scope, or retry forever. Escalate to the main agent.
+- The supervisor may dismiss routine, non-consequential, reversible TUI prompts itself using the safest option (for example, skipping a feedback survey or declining a continue-previous-session prompt), but must record every such dismissal. Consequential decisions — trust/authorization, authentication, spending, destructive, irreversible, ambiguous, or scope-expanding — always escalate.
 
 ## Job contract
 
@@ -69,8 +70,9 @@ If a marker is absent, the supervisor reports `RUNNING` only while the phase dea
    Re-check `pwd -P` and the worktree identity after establishing the cwd and before sending the executor prompt. If either check fails, stop and escalate rather than launching. The wrapper expands to `agy --dangerously-skip-permissions`; pass the executor prompt as its arguments/input using the existing cmux send controls.
 7. Use the existing PostInvocation hook named `agy-result-hook`, configured as a **PostInvocation** hook, invoking `~/bin/agy-hook-notify.sh`. Its transcript source is `~/agi-result.txt`. Do not call it `cmux-auto-approve`, and do not treat it as a PreInvocation hook.
 8. Generate a fresh cryptographically random `job_nonce` for every job. Require the executor to emit `<!-- CMX_JOB <job_nonce> -->` immediately before each lifecycle marker. Before launching, record the transcript file identity, byte offset, and modification time. Poll only bytes appended after that offset; if the file is truncated/replaced, stop and escalate rather than scanning old content. Accept a marker only when the current nonce appears in the same fresh appended segment immediately before it. This per-job framing prevents stale markers from a previous invocation in the global `~/agi-result.txt` from completing the new job.
-9. Send the formatted job prompt to the recorded executor workspace and surface using explicit IDs and start a monotonic deadline. Poll the transcript file with bounded intervals using file reads/stat; use screen reads only to detect pane loss or confirm that input was sent.
-10. On completion, copy or reference the fresh job transcript segment and collect artifacts named by the executor. Do not report completion until the nonce-framed marker and expected artifact evidence are present.
+9. Run the executor-ready gate before sending the job prompt. Never send the job prompt to an executor that is still starting or is asking a consequential question. After launch, poll the executor surface screen with `cmux read-screen --workspace <cmux-agent-workspace> --surface <executor-surface>` at bounded intervals until the executor's ready prompt appears — for agy, the `>` input prompt after its banner and model line. If the executor instead shows a question/decision prompt, classify it. Routine, non-consequential, and reversible prompts (for example, feedback surveys, skip offers, or fresh-session confirmations such as "continue previous conversation?") may be dismissed by the supervisor with the safest option — for fresh-session confirmations, decline and start new — and every such dismissal MUST be recorded in the result. Consequential prompts (trust/authorization, authentication, spending, destructive, irreversible, ambiguous, or scope-expanding) are escalated to the main agent with a screen capture; do not guess an answer, and do not send the job past a consequential question. If readiness is not confirmed within a bounded readiness deadline, stop the executor and escalate rather than sending the prompt blind. A confirmed ready prompt is the only authorization to send the job prompt.
+10. Send the formatted job prompt to the recorded executor workspace and surface using explicit IDs and start a monotonic deadline. Monitor with two complementary channels, each poll bounded: (a) push — the transcript file via file reads/stat, populated by the `agy-result-hook` PostInvocation hook; and (b) pull — the executor surface screen via `cmux read-screen --workspace <cmux-agent-workspace> --surface <executor-surface>` for live pane state. Classify the screen state as `idle` (executor back at its ready prompt after a turn), `working` (banner or tool activity, not at the ready prompt), `question` (interactive prompt asking for a decision), or `lost` (pane/surface missing). Never send the job prompt while the screen shows `question`; never treat a `working` screen as idle.
+11. On completion, copy or reference the fresh job transcript segment and collect artifacts named by the executor. Do not report completion until the nonce-framed marker and expected artifact evidence are present.
 
 ## Monitoring and routing
 
@@ -80,10 +82,12 @@ Route signals as follows:
 
 | Observation | Decision |
 | --- | --- |
+| Executor not at the ready prompt, or asking a question, before the job prompt is sent | Capture the screen, do not answer, do not send the job, and escalate to the main agent. |
+| Screen state `question` at any point (pre-job or mid-job) | Classify: routine/non-consequential/reversible (survey, skip, fresh-session confirmation) → dismiss with the safest option and record it; consequential (trust, authorization, authentication, spending, destructive, scope, ambiguity) → capture the screen and escalate, never guess. |
 | Routine progress and no marker | Let the executor continue until the deadline. |
 | `NEED_APPROVAL` | Pause/hold the job, relay the requested change and evidence to the main agent, and wait for explicit approval or rejection. The executor must remain tool-free until the decision is returned. |
 | `QUESTION` | Relay verbatim; do not answer based on supervisor guesswork. |
-| `GOAL_COMPLETE` | Verify artifacts and return the result. |
+| `GOAL_COMPLETE` | Treat as complete only when the nonce-framed marker is corroborated by artifact evidence and the screen shows the executor `idle` at the ready prompt after responding; a marker while the screen still shows `working` is not completion. |
 | `ERROR`, `STUCK`, pane death, hook failure, or timeout | Stop safely, preserve transcript/screen evidence, and escalate once. |
 | Destructive, irreversible, spending, ambiguous, or scope-expanding request without marker | Treat as a contract violation; stop and escalate rather than auto-running it. |
 
@@ -125,5 +129,8 @@ Exercise the contract with a disposable pane and bounded test jobs before relyin
 4. A job emits `QUESTION`; the question and answer round-trip without supervisor invention.
 5. A silent, stuck, dead-pane, unreadable-hook, or timed-out job terminates and reports instead of looping.
 6. A transcript containing stale markers does not complete a newly launched job.
+7. A freshly launched executor that is not yet at the ready prompt does not receive the job prompt; a question/decision state is captured and escalated instead.
+8. The supervisor corroborates a pushed `GOAL_COMPLETE` marker with a pulled pane state showing the executor `idle`; a marker appearing while the screen is still `working` does not complete the job.
+9. A routine, non-consequential TUI prompt (for example, a feedback survey) is dismissed with the safest option and recorded without escalation, while a consequential prompt (for example, a trust/authorization question) is escalated.
 
 Do not run destructive or spending scenarios as validation. Record the exact command, timeout, marker, artifact, and observed result for each live probe.
