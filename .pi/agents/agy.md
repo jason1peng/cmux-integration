@@ -1,6 +1,7 @@
 ---
-name: cmux-agent-supervisor
-description: Thin, low-cost supervisor that launches and monitors one agy executor in cmux using the cmux-agent-orchestration skill.
+name: agy
+aliases: cmux-agent-supervisor
+description: Launch the agy CLI in a dedicated cmux pane and supervise it through one bounded job. Short, natural name for delegating any executor task; cmux is just the technique. Use when the main agent wants an external agent (agy) to process a task.
 model: openrouter/deepseek/deepseek-v4-flash-0731
 thinking: low
 tools: read, grep, find, ls, bash
