@@ -6,25 +6,120 @@ The profile is the only place that selects an executable, permission/trust mode,
 
 ## Selection and setup
 
+Both executor options use the same five-step setup:
+
+1. Create the machine-local profile/runtime directories.
+2. Copy the selected profile template as `<profile-id>.json`.
+3. Configure that executor's lifecycle hook and result source.
+4. Export the profile-selection environment variables (or put `executor_profile` in the job contract).
+5. Run a harmless disposable job and confirm lifecycle, transcript, artifact, and idle evidence.
+
+The important difference is ownership: this repository includes the Cursor adapter/template, while agy's wrapper and hooks must already be supplied by the machine's agy installation.
+
+### 1. Common profile setup
+
+Run this in the environment that starts Pi. Keep these values outside the repository:
+
+```bash
+repo=/path/to/cmux-integration
+export CMUX_AGENT_CONFIG="$HOME/.config/cmux-agent"
+export CMUX_AGENT_PROFILE_DIR="$CMUX_AGENT_CONFIG/profiles"
+export CMUX_AGENT_RUNTIME="$HOME/.local/state/cmux-agent"
+mkdir -p "$CMUX_AGENT_PROFILE_DIR" "$CMUX_AGENT_RUNTIME/jobs" "$CMUX_AGENT_RUNTIME/events"
+```
+
+Install one or both profile templates:
+
+```bash
+cp "$repo/docs/examples/executor-profile.cursor.json" \
+   "$CMUX_AGENT_PROFILE_DIR/cursor.json"
+cp "$repo/docs/examples/executor-profile.agy.json" \
+   "$CMUX_AGENT_PROFILE_DIR/agy.json"
+```
+
 The supervisor resolves profiles in this order:
 
 1. An explicit `executor_profile` in the `<CMUX_AGENT_JOB>` contract.
 2. `CMUX_AGENT_EXECUTOR`, when the job omits `executor_profile`.
 3. No fallback. Missing or unknown selection fails before the prompt is sent.
 
-There is no CLI auto-detection. Task text cannot provide a command, argv, executable path, or permission flag. Configure a profile directory explicitly when the default is not suitable:
+For example, select one executor for the current Pi session with:
 
 ```bash
-mkdir -p "$HOME/.config/cmux-agent/profiles" \
-         "$HOME/.cursor/hooks" \
-         "$HOME/.local/state/cmux-agent/jobs"
-export CMUX_AGENT_CONFIG="$HOME/.config/cmux-agent"
-export CMUX_AGENT_PROFILE_DIR="$CMUX_AGENT_CONFIG/profiles"
-export CMUX_AGENT_RUNTIME="$HOME/.local/state/cmux-agent"
-export CMUX_AGENT_EXECUTOR=cursor       # an explicit operator choice, not detection
+export CMUX_AGENT_EXECUTOR=cursor   # or agy; this is an explicit choice
 ```
 
-Copy one of the templates in `docs/examples/` to the machine-local profile directory, replace only the documented placeholders, and validate the executable and hook sink before using it. For the Cursor profile, copy `docs/examples/cursor-stop-notify.sh` to `$HOME/.cursor/hooks/cursor-stop-notify.sh` and merge the stop registration into the supported user hook file `$HOME/.cursor/hooks.json` using the command `hooks/cursor-stop-notify.sh` with `timeout: 5` (the user-hook working directory is `$HOME/.cursor`). Preserve unrelated existing hooks; do not overwrite the file. The checked-in `docs/examples/cursor-hooks.json` is instead a project-local disposable template: copy the adapter to `.cursor/hooks/cursor-stop-notify.sh` and merge that template's `.cursor/hooks/cursor-stop-notify.sh` command into the project's `.cursor/hooks.json`. Do not use the project-relative command in the user hook file, and do not use the user-relative command in a project hook file. Hook command paths are resolved by Cursor from the selected hook location; they are not `${CMUX_AGENT_CONFIG}` placeholder expansions. Profile placeholders are expanded from explicitly allowed machine-local values (such as `HOME`, `CMUX_AGENT_CONFIG`, and `CMUX_AGENT_RUNTIME`), never by evaluating arbitrary shell text. The supervisor performs this validation at launch as well. A missing required hook/event sink is a failure; it is never silently downgraded to screen polling.
+A job-level selector takes precedence over the environment:
+
+```text
+<CMUX_AGENT_JOB>
+executor_profile: cursor
+# For agy, replace the line above with: executor_profile: agy
+...
+</CMUX_AGENT_JOB>
+```
+
+The `agy`/`cmux-agent-supervisor` names are aliases for the generic supervisor; they do not select a CLI. There is no CLI auto-detection, and task text cannot supply a command, argv, executable path, or permission flag.
+
+### 2. Configure the lifecycle source
+
+Both profiles require a lifecycle notification. A hook event only wakes validation; it never proves task correctness. The shared completion gate still requires a fresh correlated transcript/result marker, expected artifacts/checks, and idle cmux corroboration.
+
+| Profile | Launch | Lifecycle setup | Result source | Supplied by this repository |
+| --- | --- | --- | --- | --- |
+| `cursor` | `agent --trust` | Cursor `stop` hook and `cursor-stop-notify.sh` adapter | Per-job Cursor transcript/result plus the adapter event sink | Profile, adapter, and project/user hook templates |
+| `agy` | `~/bin/agy-with-permissions` | Existing agy `PostInvocation`/`agy-result-hook` plus `~/bin/agy-hook-notify.sh` | `~/agi-result.txt` plus the agy lifecycle event | Compatibility profile only; machine-local wrapper/hooks are not included |
+
+A missing executable, hook, event sink, transcript source, or required registration is a pre-launch failure. Do not create dummy files or silently fall back to screen polling.
+
+### 3. Cursor setup
+
+Install the adapter in the supported user-hook location:
+
+```bash
+mkdir -p "$HOME/.cursor/hooks"
+cp "$repo/docs/examples/cursor-stop-notify.sh" \
+   "$HOME/.cursor/hooks/cursor-stop-notify.sh"
+chmod +x "$HOME/.cursor/hooks/cursor-stop-notify.sh"
+```
+
+Merge this `stop` entry into the existing `$HOME/.cursor/hooks.json`; preserve unrelated hooks and do not overwrite the whole file:
+
+```json
+{
+  "version": 1,
+  "hooks": {
+    "stop": [
+      { "command": "hooks/cursor-stop-notify.sh", "timeout": 5 }
+    ]
+  }
+}
+```
+
+The user-hook command is relative to `$HOME/.cursor`. For a disposable project instead, copy the adapter to `.cursor/hooks/cursor-stop-notify.sh` and merge `docs/examples/cursor-hooks.json` into that project's `.cursor/hooks.json`. The project command is intentionally `.cursor/hooks/cursor-stop-notify.sh`; do not use the user-relative command in a project hook, and do not use `${CMUX_AGENT_CONFIG}` as a Cursor hook command expansion.
+
+### 4. agy setup
+
+The agy profile is a compatibility contract for an existing local agy installation. Before selecting `agy`, confirm that the machine provides:
+
+- An executable `~/bin/agy-with-permissions` wrapper.
+- An executable `~/bin/agy-hook-notify.sh` lifecycle adapter that can write to the configured `CMUX_AGENT_RUNTIME` sink.
+- The existing `agy-result-hook` registered as `PostInvocation`, not `PreInvocation`.
+- A writable `~/agi-result.txt` result/transcript source.
+
+Those files and the agy hook-registration syntax come from the agy installation or local machine setup, not from Cursor or this repository. Do not copy, invent, or modify them based only on this template. If any prerequisite is absent, leave `CMUX_AGENT_EXECUTOR=agy` unset and use `cursor` instead; the supervisor must fail closed.
+
+### 5. Switch or verify the selected profile
+
+Switching between executors only changes the explicit selector; the common cmux routing, approval, marker, timeout, and completion rules remain the same:
+
+```bash
+export CMUX_AGENT_EXECUTOR=cursor
+# or:
+export CMUX_AGENT_EXECUTOR=agy
+```
+
+Before relying on either profile, validate the selected executable and lifecycle source, then run the harmless disposable checks documented below. Profile placeholders are expanded only from explicitly allowed machine-local values such as `HOME`, `CMUX_AGENT_CONFIG`, and `CMUX_AGENT_RUNTIME`; arbitrary shell text is never evaluated. The supervisor repeats profile, cwd, executable, hook, and sink validation at launch.
 
 Profile IDs are restricted to a simple identifier (`[A-Za-z0-9][A-Za-z0-9._-]*`). The loader reads exactly `<profile-id>.json` from the configured directory, parses one JSON object, verifies the schema version and required fields, and rejects path traversal, duplicate/unknown security settings, malformed arrays, and unexecutable commands. Cwd binding is always the contract cwd after `pwd -P`/`realpath` canonicalization. The normalized cwd is recorded in diagnostics so macOS `/tmp` → `/private/tmp` symlinks cannot create a false mismatch.
 

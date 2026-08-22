@@ -342,6 +342,23 @@ grep -Fq -- 'Cursor' "$profiles_doc"
 grep -Fq -- 'notifications only' "$profiles_doc"
 grep -Fq -- 'fail closed' "$profiles_doc"
 grep -Fq -- 'pending' "$profiles_doc"
+for setup_contract in \
+  'Common profile setup' \
+  'CMUX_AGENT_PROFILE_DIR' \
+  'CMUX_AGENT_RUNTIME' \
+  'executor_profile: cursor' \
+  'executor_profile: agy' \
+  'Both profiles require a lifecycle notification' \
+  'PostInvocation' \
+  'agy-with-permissions' \
+  'agy-hook-notify.sh' \
+  'agy-result-hook' \
+  'agi-result.txt' \
+  'hooks/cursor-stop-notify.sh' \
+  '.cursor/hooks/cursor-stop-notify.sh' \
+  'do not use `${CMUX_AGENT_CONFIG}` as a Cursor hook command expansion'; do
+  grep -Fq -- "$setup_contract" "$profiles_doc"
+done
 for launch_safety in \
   'shell-quote the contract cwd as one word' \
   'shell-quote `launch.command` plus every `launch.argv` element individually' \
