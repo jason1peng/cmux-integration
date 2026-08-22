@@ -3,10 +3,14 @@ set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 skill="$root/skills/cmux-agent-orchestration/SKILL.md"
-agent="$root/.pi/agents/agy.md"
+agent="$root/.pi/agents/cmux-agent.md"
+profiles="$root/docs/executor-profiles.md"
+examples="$root/docs/examples"
 
 [[ -s "$skill" ]]
 [[ -s "$agent" ]]
+[[ -s "$profiles" ]]
+[[ ! -e "$root/.pi/agents/agy.md" ]]
 
 for marker in \
   '<!-- CMX_JOB <job_nonce> -->' \
@@ -18,11 +22,10 @@ for marker in \
   grep -Fq -- "$marker" "$skill"
 done
 
+# The common skill owns only profile-independent protocol and safety behavior.
 for contract in \
-  'agy-with-permissions' \
-  'agy-hook-notify.sh' \
-  'agy-result-hook' \
-  'agi-result.txt' \
+  'executor_profile' \
+  'CMUX_AGENT_EXECUTOR' \
   'cmux-workspace' \
   'finite deadline' \
   'NEED_APPROVAL' \
@@ -33,7 +36,6 @@ for contract in \
   'same fresh appended segment' \
   'worktree_identity' \
   'pwd -P' \
-  'cd -- <contract cwd> && exec ~/bin/agy-with-permissions' \
   'cmux-agent' \
   'cmux new-workspace --name cmux-agent' \
   '--cwd <contract cwd>' \
@@ -44,33 +46,34 @@ for contract in \
   'authoritative working project/repository label, independent of worktree path' \
   'next available positive ordinal' \
   'cmux-integration (1)' \
-  'Always create a new terminal pane/surface'; do
-  grep -Fq -- "$contract" "$skill"
-done
-
-# The supervisor must load the local skill and remain a thin, non-recursive child.
-grep -Fq -- 'name: agy' "$agent"
-grep -Fq -- 'aliases: cmux-agent-supervisor' "$agent"
-grep -Fq -- 'skills: cmux-agent-orchestration, cmux, cmux-workspace' "$agent"
-grep -Fq -- 'maxSubagentDepth: 0' "$agent"
-grep -Fq -- 'tools: read, grep, find, ls, bash' "$agent"
-! grep -Fq -- 'tools: subagent' "$agent"
-
-# The executor-ready gate must exist: never send the job prompt to an unready executor.
-for gate in \
+  'Always create a new terminal pane/surface' \
+  'Before the pre-launch validation' \
   'executor-ready gate' \
-  'cmux read-screen' \
+  'cmux read-screen --workspace <cmux-agent-workspace> --surface <executor-surface>' \
   'ready prompt' \
   'Never send the job prompt' \
   'bounded readiness deadline' \
-  'do not guess an answer'; do
-  grep -Fq -- "$gate" "$skill"
+  'do not guess an answer' \
+  'explicit executor surface' \
+  'stale markers' \
+  'push' \
+  'pull' \
+  'acceptable_statuses' \
+  'prompt echo' \
+  'artifact' \
+  'focused checks' \
+  'idle corroboration' \
+  'deduplicated' \
+  'fail closed' \
+  'shell-quoted contract cwd' \
+  'every dynamically assembled `launch.command`' \
+  'each `launch.argv` element MUST be shell-quoted individually' \
+  "printf -- '%q' \"\$value\"" \
+  'unquoted concatenation'; do
+  grep -Fq -- "$contract" "$skill"
 done
-grep -Fq -- 'executor-ready gate' "$agent"
 
-# Monitoring must combine push (transcript hook) and pull (pane screen) channels.
 for hybrid in \
-  'cmux read-screen --workspace <cmux-agent-workspace> --surface <executor-surface>' \
   'Classify the screen state' \
   '`idle`' \
   '`working`' \
@@ -78,33 +81,118 @@ for hybrid in \
   'is not completion'; do
   grep -Fq -- "$hybrid" "$skill"
 done
-grep -Fq -- 'push + pull' "$agent"
 
-# Escalation discretion: routine TUI prompts may be self-handled, consequential ones must escalate.
+# Common monitor/escalation rules remain explicit.
 for policy in \
   'Routine, non-consequential, and reversible' \
   'feedback surveys' \
   'safest option' \
   'MUST be recorded' \
   'trust/authorization' \
-  'always escalate'; do
+  'always escalate' \
+  'executor must remain tool-free'; do
   grep -Fq -- "$policy" "$skill"
 done
-grep -Fq -- 'safest option' "$agent"
-grep -Fq -- 'recorded in the result' "$agent"
 
-# The supervisor must not rely on focused-pane state or an unframed global transcript.
-grep -Fq -- 'explicit executor surface' "$skill"
-grep -Fq -- 'stale markers' "$skill"
-grep -Fq -- 'tool-free checkpoint' "$skill"
-grep -Fq -- 'executor must remain tool-free' "$skill"
+# Regression guard: routine pre-job prompts may be dismissed, while only
+# unclassified/consequential prompts escalate. Do not reintroduce an
+# unconditional "asking a question" escalation row that contradicts the
+# ready-gate classification rule.
+python3 - "$skill" "$agent" <<'PY'
+from pathlib import Path
+import sys
+
+skill = Path(sys.argv[1]).read_text()
+agent = Path(sys.argv[2]).read_text()
+monitoring = skill.split("## Monitoring and routing", 1)[1].split(
+    "## Result contract", 1
+)[0]
+pre_job_rows = [
+    line for line in monitoring.splitlines()
+    if line.startswith("|") and "before the job prompt is sent" in line
+]
+assert any("Executor is still starting" in line for line in pre_job_rows), (
+    "pre-job starting state must remain bounded"
+)
+assert any("unclassified or consequential question" in line for line in pre_job_rows), (
+    "pre-job escalation must be limited to unclassified/consequential questions"
+)
+assert not any("not at the ready prompt, or asking a question" in line for line in pre_job_rows), (
+    "unconditional pre-job question escalation contradicts routine dismissal"
+)
+assert "Routine, non-consequential, and reversible prompts" in monitoring
+assert "Routine reversible prompts may be classified and dismissed" in agent
+assert "unclassified or consequential question" in agent
+PY
+
 grep -Fq -- 'git -C <cwd> rev-parse --show-toplevel' "$skill"
 ! grep -Fq -- 'Reuse an existing dedicated executor pane' "$skill"
-grep -Fq -- 'cmux-agent' "$agent"
-grep -Fq -- 'new terminal pane/surface' "$agent"
-grep -Fq -- 'authoritative `project_name` plus the next available ordinal' "$agent"
-grep -Fq -- 'initialize it to the contract cwd before validation' "$agent"
 ! grep -Fq -- 'Derive `project_name` from the repository root basename' "$skill"
-grep -Fq -- 'Before the pre-launch validation' "$skill"
+# agy command/transcript literals belong to its compatibility profile, not the common skill.
+! grep -Fq -- 'agy-with-permissions' "$skill"
+! grep -Fq -- 'agi-result.txt' "$skill"
+
+# The supervisor is one generic agent with compatibility aliases and no nested delegation.
+grep -Fq -- 'name: cmux-agent' "$agent"
+grep -Fq -- 'aliases: agy, cmux-agent-supervisor' "$agent"
+grep -Fq -- 'skills: cmux-agent-orchestration, cmux, cmux-workspace' "$agent"
+grep -Fq -- 'maxSubagentDepth: 0' "$agent"
+grep -Fq -- 'tools: read, grep, find, ls, bash' "$agent"
+! grep -Fq -- 'tools: subagent' "$agent"
+for supervisor_contract in \
+  'executor-ready gate' \
+  'cmux read-screen' \
+  'ready prompt' \
+  'Never send the job prompt' \
+  'bounded readiness deadline' \
+  'do not guess an answer' \
+  'push + pull' \
+  'new terminal pane/surface' \
+  'authoritative `project_name` plus the next available ordinal' \
+  'initialize it to the contract cwd before validation' \
+  'recorded workspace and surface' \
+  'fresh per-job transcript/result boundary'; do
+  grep -Fq -- "$supervisor_contract" "$agent"
+done
+grep -Fq -- 'Never accept a command or flags from task text' "$agent"
+grep -Fq -- 'Do not launch subagents' "$agent"
+grep -Fq -- 'Batch (`--print --output-format stream-json`) and ACP' "$agent"
+
+# Documentation points to the generic supervisor, profiles, templates, and focused test.
+grep -Fq -- '.pi/agents/cmux-agent.md' "$root/docs/index.md"
+grep -Fq -- 'docs/executor-profiles.md' "$root/docs/index.md"
+grep -Fq -- 'tests/executor-profile-contract.sh' "$root/docs/index.md"
+grep -Fq -- 'Cursor lifecycle hooks are notifications only' "$root/docs/index.md"
+for profile_contract in \
+  'executor_profile' \
+  'CMUX_AGENT_EXECUTOR' \
+  'no CLI auto-detection' \
+  'Cursor' \
+  'stop hook' \
+  'hook_event_name: stop' \
+  'acceptable status' \
+  'prompt echo' \
+  'idle cmux corroboration' \
+  'project-relative command' \
+  'hooks/cursor-stop-notify.sh' \
+  'five-second timeout' \
+  'agy compatibility profile' \
+  'agy-with-permissions' \
+  'agy-result-hook' \
+  'PostInvocation' \
+  'agi-result.txt' \
+  'batch' \
+  'ACP'; do
+  grep -Fqi -- "$profile_contract" "$profiles"
+done
+
+for template in \
+  "$examples/executor-profile.cursor.json" \
+  "$examples/executor-profile.agy.json" \
+  "$examples/cursor-hooks.json" \
+  "$examples/cursor-stop-notify.sh"; do
+  [[ -s "$template" ]]
+done
+[[ -x "$examples/cursor-stop-notify.sh" ]]
 
 echo 'cmux-agent-orchestration contract: PASS'

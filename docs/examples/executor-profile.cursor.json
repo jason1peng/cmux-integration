@@ -1,0 +1,97 @@
+{
+  "profile_id": "cursor",
+  "schema_version": 1,
+  "launch": {
+    "command": "agent",
+    "argv": [
+      "--trust"
+    ],
+    "mode": "interactive",
+    "permission_mode": "explicit-trust",
+    "dangerous": false,
+    "force": false,
+    "yolo": false
+  },
+  "cwd": {
+    "binding": "contract",
+    "canonicalize": "pwd -P"
+  },
+  "probes": {
+    "ready": {
+      "kind": "screen",
+      "description": "Cursor interactive ready prompt accepting a new message"
+    },
+    "idle": {
+      "kind": "screen",
+      "description": "Cursor interactive follow-up prompt after the turn"
+    },
+    "question": {
+      "kind": "screen",
+      "description": "Cursor trust, authorization, approval, or other decision prompt"
+    }
+  },
+  "transport": {
+    "prompt": {
+      "kind": "cmux-send",
+      "requires_workspace": true,
+      "requires_surface": true
+    },
+    "continuation": {
+      "kind": "cmux-send",
+      "requires_workspace": true,
+      "requires_surface": true
+    }
+  },
+  "transcript": {
+    "source": "${CMUX_AGENT_RUNTIME}/jobs/${job_nonce}/cursor.pty-result.ndjson",
+    "kind": "per-job-pty-result",
+    "freshness": "new-source-or-appended-segment-after-launch",
+    "prompt_echo_rule": "reject markers present only in submitted input, reflected prompt echo, or screen text"
+  },
+  "result": {
+    "marker_rule": "nonce-framed-marker-in-fresh-transcript-result-segment",
+    "artifact_checks": [
+      "expected artifact exists",
+      "git diff --check",
+      "declared focused checks pass"
+    ],
+    "idle_corroboration": true
+  },
+  "lifecycle": {
+    "event": "stop",
+    "source": "cursor-hooks-stop-adapter",
+    "hook_config": "${HOME}/.cursor/hooks.json",
+    "hook_sink": "${CMUX_AGENT_RUNTIME}/events/cursor-stop.ndjson",
+    "adapter": "${HOME}/.cursor/hooks/cursor-stop-notify.sh",
+    "required": true,
+    "acceptable_statuses": [
+      "success",
+      "completed",
+      "ok"
+    ],
+    "failure_statuses": [
+      "error",
+      "aborted"
+    ],
+    "correlation": [
+      "job_nonce",
+      "conversation_id",
+      "generation_id",
+      "session_id",
+      "workspace",
+      "surface",
+      "cwd",
+      "transcript_path"
+    ],
+    "deduplicate_by": [
+      "event_id",
+      "session_id",
+      "conversation_id",
+      "generation_id"
+    ]
+  },
+  "stop": {
+    "mode": "profile-command-with-explicit-surface",
+    "deadline_seconds": 10
+  }
+}
