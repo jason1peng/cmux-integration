@@ -1,0 +1,91 @@
+{
+  "profile_id": "agy",
+  "schema_version": 1,
+  "launch": {
+    "command": "${HOME}/bin/agy-with-permissions",
+    "argv": [],
+    "mode": "interactive",
+    "permission_mode": "wrapper-declared-dangerous",
+    "dangerous": true,
+    "force": false,
+    "yolo": false
+  },
+  "cwd": {
+    "binding": "contract",
+    "canonicalize": "pwd -P"
+  },
+  "probes": {
+    "ready": {
+      "kind": "screen",
+      "description": "executor ready input prompt after banner and model line"
+    },
+    "idle": {
+      "kind": "screen",
+      "description": "executor returned to its ready input prompt after a turn"
+    },
+    "question": {
+      "kind": "screen",
+      "description": "executor asks for a consequential or routine decision"
+    }
+  },
+  "transport": {
+    "prompt": {
+      "kind": "cmux-send",
+      "requires_workspace": true,
+      "requires_surface": true
+    },
+    "continuation": {
+      "kind": "cmux-send",
+      "requires_workspace": true,
+      "requires_surface": true
+    }
+  },
+  "transcript": {
+    "source": "${HOME}/agi-result.txt",
+    "kind": "post-invocation-hook-transcript",
+    "hook": "agy-result-hook",
+    "freshness": "record-file-identity-offset-and-mtime-before-launch"
+  },
+  "result": {
+    "marker_rule": "nonce-framed-marker-in-same-fresh-appended-segment",
+    "artifact_checks": [
+      "expected artifact exists",
+      "git diff --check",
+      "declared focused checks pass"
+    ],
+    "idle_corroboration": true
+  },
+  "lifecycle": {
+    "event": "PostInvocation",
+    "source": "agy-result-hook",
+    "hook": "${HOME}/bin/agy-hook-notify.sh",
+    "hook_registration": "PostInvocation",
+    "required": true,
+    "acceptable_statuses": [
+      "success",
+      "completed",
+      "ok"
+    ],
+    "failure_statuses": [
+      "error",
+      "aborted"
+    ],
+    "correlation": [
+      "job_nonce",
+      "executor_session",
+      "workspace",
+      "surface",
+      "cwd",
+      "transcript_source"
+    ],
+    "deduplicate_by": [
+      "event_id",
+      "executor_session",
+      "transcript_offset"
+    ]
+  },
+  "stop": {
+    "mode": "profile-command-with-explicit-surface",
+    "deadline_seconds": 10
+  }
+}
