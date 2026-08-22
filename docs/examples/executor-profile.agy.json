@@ -58,7 +58,9 @@
   "lifecycle": {
     "event": "PostInvocation",
     "source": "agy-result-hook",
-    "hook": "${HOME}/bin/agy-hook-notify.sh",
+    "hook_config": "${HOME}/.gemini/config/hooks.json",
+    "hook_sink": "${CMUX_AGENT_RUNTIME}/events/agy-result.ndjson",
+    "adapter": "${HOME}/bin/agy-hook-notify.sh",
     "hook_registration": "PostInvocation",
     "required": true,
     "acceptable_statuses": [

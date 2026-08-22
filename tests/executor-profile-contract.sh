@@ -99,7 +99,9 @@ assert agy["transcript"]["source"] == "${HOME}/agi-result.txt"
 assert agy["transcript"]["hook"] == "agy-result-hook"
 assert agy["lifecycle"]["event"] == "PostInvocation"
 assert agy["lifecycle"]["hook_registration"] == "PostInvocation"
-assert agy["lifecycle"]["hook"].endswith("agy-hook-notify.sh")
+assert agy["lifecycle"]["adapter"].endswith("/agy-hook-notify.sh")
+assert agy["lifecycle"]["hook_config"].endswith("/.gemini/config/hooks.json")
+assert agy["lifecycle"]["hook_sink"].endswith("/events/agy-result.ndjson")
 
 hooks = json.loads((examples / "cursor-hooks.json").read_text())
 assert hooks["hooks"]["stop"][0]["command"] == ".cursor/hooks/cursor-stop-notify.sh"
@@ -342,6 +344,18 @@ grep -Fq -- 'Cursor' "$profiles_doc"
 grep -Fq -- 'notifications only' "$profiles_doc"
 grep -Fq -- 'fail closed' "$profiles_doc"
 grep -Fq -- 'pending' "$profiles_doc"
+python3 - "$examples/agy-result-hook.hooks.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+hooks_fragment = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+assert set(hooks_fragment) == {"agy-result-hook"}
+assert hooks_fragment["agy-result-hook"]["PostInvocation"][0]["type"] == "command"
+assert hooks_fragment["agy-result-hook"]["PostInvocation"][0]["timeout"] == 30
+assert hooks_fragment["agy-result-hook"]["PostInvocation"][0]["command"].endswith("agy-hook-notify.sh")
+PY
+
 for setup_contract in \
   'Common profile setup' \
   'CMUX_AGENT_PROFILE_DIR' \

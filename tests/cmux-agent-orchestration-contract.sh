@@ -190,9 +190,19 @@ for template in \
   "$examples/executor-profile.cursor.json" \
   "$examples/executor-profile.agy.json" \
   "$examples/cursor-hooks.json" \
-  "$examples/cursor-stop-notify.sh"; do
+  "$examples/cursor-stop-notify.sh" \
+  "$examples/agy-result-hook.hooks.json" \
+  "$examples/agy-with-permissions.sh" \
+  "$examples/agy-hook-notify.sh" \
+  "$examples/agy-install.sh"; do
   [[ -s "$template" ]]
 done
-[[ -x "$examples/cursor-stop-notify.sh" ]]
+for executable in \
+  "$examples/cursor-stop-notify.sh" \
+  "$examples/agy-with-permissions.sh" \
+  "$examples/agy-hook-notify.sh" \
+  "$examples/agy-install.sh"; do
+  [[ -x "$executable" ]]
+done
 
 echo 'cmux-agent-orchestration contract: PASS'

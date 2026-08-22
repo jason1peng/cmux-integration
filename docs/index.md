@@ -39,7 +39,8 @@ Before planning or implementation:
 | `skills/cmux-agent-orchestration/SKILL.md` | Machine-local executor-profile contract, marker protocol, dedicated `cmux-agent` workspace policy, project-labeled new panes, executor-ready gate before job submission, hybrid push+pull monitoring, correlated lifecycle/result completion gate, escalation discretion for routine prompts, approval routing, lifecycle, failure handling, deferred transports, and verification scenarios. |
 | `.pi/agents/cmux-agent.md` | Canonical generic thin supervisor; `agy` and `cmux-agent-supervisor` remain compatibility aliases. |
 | `docs/executor-profiles.md` | Profile selection/schema, Cursor interactive stop-hook setup, agy compatibility details, disposable validation evidence, and batch/ACP limitations. |
-| `docs/examples/` | Copyable Cursor/agy profile and hook templates; these are not machine-local configuration. |
+| `docs/examples/` | Copyable Cursor/agy executor profiles, agy wrapper + PostInvocation lifecycle templates, and an explicit-confirmation installer. These are not machine-local configuration. |
+| `tests/agy-executor-contract.sh` | Focused contract checks for the portable agy wrapper, PostInvocation lifecycle adapter, registration fragment, installer merge, and no-secret/no-private-path bounds. |
 | `tests/cmux-agent-orchestration-contract.sh` | Static common-protocol, generic-supervisor, alias, pane-targeting, cwd, nonce, and no-screen-only-marker validation. |
 | `tests/executor-profile-contract.sh` | Focused JSON-template and profile-specific lifecycle/permission contract validation. |
 
