@@ -2,7 +2,7 @@
 
 ## Read This First
 
-This repository contains a reusable cmux orchestration skill and its project-scoped Pi subagent configuration.
+This repository contains a reusable cmux orchestration skill and its project-scoped Pi subagent configuration. For a user-facing quick start, read `README.md`; this file remains the documentation map and source-of-truth entry point for agent work.
 
 Before planning or implementation:
 
@@ -21,6 +21,7 @@ Before planning or implementation:
 
 ## Repository Map
 
+- `README.md` — user-facing introduction, prerequisites, setup, and quick-start usage.
 - `docs/` — documentation entry point and repository-wide change principles.
 - `skills/` — reusable Pi skills. The cmux orchestration skill is at `skills/cmux-agent-orchestration/SKILL.md`.
 - `.pi/agents/` — project-scoped pi-subagents definitions. The generic supervisor is at `.pi/agents/cmux-agent.md` (aliases: `agy`, `cmux-agent-supervisor`).
@@ -30,6 +31,7 @@ Before planning or implementation:
 
 | Path | Purpose |
 | --- | --- |
+| `README.md` | User-facing introduction, prerequisites, setup, and quick-start usage. |
 | `docs/index.md` | First-stop documentation map and repository workflow. |
 | `docs/principles.md` | Source of truth for validation, testing, and maintainability principles. |
 | `AGENTS.md` | Root agent guidance pointing to the documentation SSOT. |
