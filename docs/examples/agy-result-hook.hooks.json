@@ -1,0 +1,11 @@
+{
+  "agy-result-hook": {
+    "PostInvocation": [
+      {
+        "type": "command",
+        "command": "~/bin/agy-hook-notify.sh",
+        "timeout": 30
+      }
+    ]
+  }
+}

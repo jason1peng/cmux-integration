@@ -52,7 +52,7 @@ Screen output alone, an exit code alone, or a hook event alone never proves comp
 - `cmux` installed and usable (`cmux ping` should return `PONG`).
 - A disposable or approved working directory for the executor job.
 - A writable machine-local runtime directory.
-- `python3` for the checked-in Cursor hook adapter.
+- `python3` for the checked-in hook adapters: the Cursor stop adapter and the agy lifecycle adapter and installer all require it.
 
 ### Additional Cursor requirements
 
@@ -62,14 +62,14 @@ Screen output alone, an exit code alone, or a hook event alone never proves comp
 
 ### Additional agy requirements
 
-agy support is compatibility support for an existing local installation. The machine must already provide:
+agy support is compatibility support for an existing agy installation. This repository provides portable, reviewed templates for the wrapper and lifecycle hook that the machine-local agy setup requires. The operator installs them locally; the agy product itself must already be installed and configured on the machine:
 
-- `~/bin/agy-with-permissions` — executable agy launch wrapper;
-- `~/bin/agy-hook-notify.sh` — executable lifecycle adapter;
-- `agy-result-hook` registered as an agy **`PostInvocation`** hook; and
-- `~/agi-result.txt` — the agy result/transcript source.
+- `~/bin/agy-with-permissions` — executable agy launch wrapper (template: `docs/examples/agy-with-permissions.sh`);
+- `~/bin/agy-hook-notify.sh` — executable `PostInvocation` lifecycle adapter (template: `docs/examples/agy-hook-notify.sh`);
+- a `PostInvocation` hook named `agy-result-hook` registered in the global agy hooks config (fragment: `docs/examples/agy-result-hook.hooks.json`); and
+- `~/agi-result.txt` — the agy result/transcript source. The path is part of the profile contract (the adapter and the profile must agree); it is not an environment override.
 
-These files are not supplied by Cursor, Gemini, or this repository. Their installation and hook-registration syntax belong to the local agy installation. If they are absent, use Cursor or leave agy unselected; the supervisor fails closed rather than falling back to screen polling.
+The templates are placed locally by the operator (or by `agy-install.sh` with explicit confirmation); this repository never silently creates, copies, or modifies user hooks. Product-specific items (the agy CLI, credentials, and working hook registration) remain the local agy installation. If any agy prerequisite is absent, leave agy unselected and use Cursor; the supervisor fails closed rather than falling back to screen polling.
 
 ## Setup shared by both profiles
 
@@ -146,14 +146,32 @@ Or select it per job with `executor_profile: cursor`.
 
 ## Configure agy
 
-Copying `agy.json` only describes the compatibility contract; it does not install agy. Before selecting agy, configure the external agy installation so that:
+This repository provides portable templates for the agy wrapper and lifecycle hook, but only the operator can complete their local installation. The machine that runs Pi must have an installed, configured agy CLI and the agy product that needs credentials recorded. Use the included installer (with explicit confirmation) or copy the templates by hand, then register the hook.
 
-1. `~/bin/agy-with-permissions` launches the intended agy interactive CLI.
-2. `agy-result-hook` runs after invocation (`PostInvocation`) and maintains a fresh `~/agi-result.txt` result segment.
-3. `~/bin/agy-hook-notify.sh` emits the lifecycle notification to the configured `CMUX_AGENT_RUNTIME` sink.
-4. The wrapper, hook, result source, and event sink are readable/writable by the Pi process.
+### 1. Install the wrapper and adapter
 
-Then select it:
+```bash
+export CMUX_AGENT_RUNTIME="$HOME/.local/state/cmux-agent"
+mkdir -p "$CMUX_AGENT_RUNTIME/jobs" "$CMUX_AGENT_RUNTIME/events"
+bash "$repo/docs/examples/agy-install.sh"
+```
+
+The installer asks before copying `~/bin/agy-with-permissions` and `~/bin/agy-hook-notify.sh` and before merging the `agy-result-hook` registration into the global agy hooks config. Everything unrelated is preserved.
+
+### 2. Result-file setup
+
+The result source is `${HOME}/agi-result.txt`. The path is fixed by the profile contract so the adapter and the supervisor read the same file; relocating it means changing both the installed adapter and the machine-local `agy.json` `transcript.source` together. The hook creates the file with its first append; no empty placeholder is installed in advance. Confirm the Pi process can read it and can write the runtime event sink.
+
+### 3. Install the profile
+
+```bash
+export CMUX_AGENT_CONFIG="$HOME/.config/cmux-agent"
+export CMUX_AGENT_PROFILE_DIR="$CMUX_AGENT_CONFIG/profiles"
+mkdir -p "$CMUX_AGENT_PROFILE_DIR"
+cp "$repo/docs/examples/executor-profile.agy.json" "$CMUX_AGENT_PROFILE_DIR/agy.json"
+```
+
+### 4. Select agy
 
 ```bash
 export CMUX_AGENT_EXECUTOR=agy
@@ -161,7 +179,7 @@ export CMUX_AGENT_EXECUTOR=agy
 
 Or select it per job with `executor_profile: agy`.
 
-Do not create empty placeholder files. A missing agy prerequisite is a configuration failure, not permission to use another CLI automatically.
+A missing agy prerequisite is a configuration failure, not permission to use another CLI automatically.
 
 ## Run a job
 
@@ -205,6 +223,9 @@ Run the repository checks from the checkout:
 ```bash
 bash tests/cmux-agent-orchestration-contract.sh
 bash tests/executor-profile-contract.sh
+bash tests/agy-executor-contract.sh
+bash -n tests/*.sh docs/examples/*.sh
+python3 -m json.tool <each changed JSON file>
 git diff --check
 ```
 
@@ -212,7 +233,7 @@ Common failures:
 
 - **Unknown or missing profile:** set `CMUX_AGENT_EXECUTOR` or add `executor_profile` to the job; verify `<profile-id>.json` exists in `$CMUX_AGENT_PROFILE_DIR`.
 - **Cursor lifecycle source unavailable:** verify the adapter is executable, the hook command uses the correct user/project-relative path, and `$CMUX_AGENT_RUNTIME` is writable.
-- **agy lifecycle source unavailable:** verify all four agy prerequisites and the `PostInvocation` registration; this repository cannot repair them.
+- **agy lifecycle source unavailable:** verify the installed wrapper in `~/bin`, the `agy-result-hook` `PostInvocation` registration, and the writable result source. The portable templates come from `docs/examples/`; this repository does not silently install them.
 - **Marker appears but job is not accepted:** screen text/prompt echo is not authoritative; inspect the fresh transcript, lifecycle correlation, expected artifact/checks, and idle state.
 - **Cursor reports `error` or `aborted`:** the event fails closed even if an artifact was created; inspect the fresh transcript and rerun only after resolving the failure.
 

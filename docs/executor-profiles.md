@@ -14,7 +14,7 @@ Both executor options use the same five-step setup:
 4. Export the profile-selection environment variables (or put `executor_profile` in the job contract).
 5. Run a harmless disposable job and confirm lifecycle, transcript, artifact, and idle evidence.
 
-The important difference is ownership: this repository includes the Cursor adapter/template, while agy's wrapper and hooks must already be supplied by the machine's agy installation.
+The important difference is ownership: this repository includes both the Cursor adapter/template and the portable agy wrapper + lifecycle-hook templates, while the agy product itself (the executable, credentials, and working registration) must already be supplied by the machine’s agy installation. The agy templates are placed locally by the operator, never silently installed or modified here.
 
 ### 1. Common profile setup
 
@@ -68,7 +68,7 @@ Both profiles require a lifecycle notification. A hook event only wakes validati
 | Profile | Launch | Lifecycle setup | Result source | Supplied by this repository |
 | --- | --- | --- | --- | --- |
 | `cursor` | `agent --trust` | Cursor `stop` hook and `cursor-stop-notify.sh` adapter | Per-job Cursor transcript/result plus the adapter event sink | Profile, adapter, and project/user hook templates |
-| `agy` | `~/bin/agy-with-permissions` | Existing agy `PostInvocation`/`agy-result-hook` plus `~/bin/agy-hook-notify.sh` | `~/agi-result.txt` plus the agy lifecycle event | Compatibility profile only; machine-local wrapper/hooks are not included |
+| `agy` | `~/bin/agy-with-permissions` (portable template) | agy `PostInvocation` `agy-result-hook` against the portable `agy-hook-notify.sh` adapter plus the result file and runtime sink | `~/agi-result.txt` plus the agy lifecycle event | Templates provided; operator installs the wrapper/adapter and registers the hook locally |
 
 A missing executable, hook, event sink, transcript source, or required registration is a pre-launch failure. Do not create dummy files or silently fall back to screen polling.
 
@@ -100,14 +100,96 @@ The user-hook command is relative to `$HOME/.cursor`. For a disposable project i
 
 ### 4. agy setup
 
-The agy profile is a compatibility contract for an existing local agy installation. Before selecting `agy`, confirm that the machine provides:
+The agy profile is compatibility support for an existing agy installation. This repository now provides portable, reviewed templates for the wrapper and lifecycle hook that the machine-local agy setup requires; it still does not (and cannot) provide the agy product itself, your model credentials, or a working hook registration. Completing the setup below is an explicit machine-local operator step, not something the supervisor does for you.
 
-- An executable `~/bin/agy-with-permissions` wrapper.
-- An executable `~/bin/agy-hook-notify.sh` lifecycle adapter that can write to the configured `CMUX_AGENT_RUNTIME` sink.
-- The existing `agy-result-hook` registered as `PostInvocation`, not `PreInvocation`.
-- A writable `~/agi-result.txt` result/transcript source.
+#### a. Prerequisites
 
-Those files and the agy hook-registration syntax come from the agy installation or local machine setup, not from Cursor or this repository. Do not copy, invent, or modify them based only on this template. If any prerequisite is absent, leave `CMUX_AGENT_EXECUTOR=agy` unset and use `cursor` instead; the supervisor must fail closed.
+The supported product is the Antigravity-family `agy` CLI (the contract here was validated against `agy 1.1.13`), which registers named lifecycle hooks in the global config `~/.gemini/config/hooks.json` and delivers camelCase JSON payloads to hook commands on stdin. This is not the standard Gemini CLI hook model; do not substitute another CLI. agy must be installed and on `$PATH` so `agy --version` identifies the CLI, `python3` must be available for the lifecycle adapter and installer, and the machine must supply the agy product configuration (for example credentials and an identity). This repository does not install or configure agy, its model/credential store, or its identity. If agy is absent or unconfigured, do not select the `agy` profile; the supervisor fails closed rather than falling back to another CLI.
+
+#### b. What this repository provides
+
+- `docs/examples/agy-with-permissions.sh` — a portable launcher that starts agy as `agy --dangerously-skip-permissions` and forwards arguments. It contains no credentials, tokens, or private paths.
+- `docs/examples/agy-hook-notify.sh` — a portable `PostInvocation` lifecycle adapter. It validates the camelCase agy hook JSON (`transcriptPath`, `conversationId`, and an integer `invocationNum` are required), fails closed when the declared transcript is unreadable, appends a bounded transcript tail to the result file, and writes one correlated lifecycle event line with stable invocation identity to the configured runtime sink. It never approves tools, edits user files, or grants permission.
+- `docs/examples/agy-result-hook.hooks.json` — a registration fragment that names the hook `agy-result-hook` and binds the installed adapter as its `PostInvocation` command.
+- `docs/examples/agy-install.sh` — an explicit-confirmation installer that copies the wrapper and adapter into `~/bin` and merges the `agy-result-hook` fragment into the global agy hooks config without deleting unrelated hooks.
+- `tests/agy-executor-contract.sh` — focused contract coverage for the wrapper, adapter, registration, installer, and no-secret/no-private-path bounds.
+
+#### c. What must come from the local agy installation
+
+- The agy executable itself and its product configuration (models, authentication, identity).
+- The global hooks config (`~/.gemini/config/hooks.json`) into which the agy-result-hook registration is merged. The operator confirms this edit.
+- The decision to launch agy in dangerous permission mode (only via the wrapper). This mode removes OS permission prompts within the approved workspace; it does **not** authorize content decisions.
+
+#### d. Required environment variables
+
+- `CMUX_AGENT_CONFIG` — base machine-local config root (`~/.config/cmux-agent`).
+- `CMUX_AGENT_PROFILE_DIR` — directory containing `agy.json`, a copy of the agy profile template.
+- `CMUX_AGENT_RUNTIME` — machine-local runtime directory (default `~/.local/state/cmux-agent`), writable by the Pi process. The lifecycle event sink is `$CMUX_AGENT_RUNTIME/events/agy-result.ndjson`.
+- `CMUX_AGENT_HOOKS_CONFIG` (optional, installer only) — overrides the agy global hooks config path.
+- `CMUX_AGENT_EXECUTOR` — must be `agy` explicitly, or the job must declare `executor_profile: agy`.
+
+There is deliberately no result-file override environment variable: `${HOME}/agi-result.txt` is part of the contract, and the adapter and the profile's `transcript.source` must name the same file. Relocating the result file means editing both the installed adapter and the machine-local `agy.json` together; a mismatch fails validation rather than silently reading two different sources.
+
+#### e. Profile setup
+
+```sh
+repo=/path/to/cmux-integration
+export CMUX_AGENT_CONFIG="$HOME/.config/cmux-agent"
+export CMUX_AGENT_PROFILE_DIR="$CMUX_AGENT_CONFIG/profiles"
+export CMUX_AGENT_RUNTIME="$HOME/.local/state/cmux-agent"
+mkdir -p "$CMUX_AGENT_PROFILE_DIR" "$CMUX_AGENT_RUNTIME/jobs" "$CMUX_AGENT_RUNTIME/events"
+cp "$repo/docs/examples/executor-profile.agy.json" "$CMUX_AGENT_PROFILE_DIR/agy.json"
+```
+
+#### f. Wrapper setup
+
+Review, then copy `docs/examples/agy-with-permissions.sh` to `~/bin/agy-with-permissions` (or run the installer). It must be executable by the Pi process. The wrapper is the only place the dangerous flag appears; the supervisor never adds one and never accepts a command or flags from task text.
+
+#### g. PostInvocation hook registration
+
+Review the portable adapter, then register it as the `PostInvocation` handler of the hook name `agy-result-hook` in the global agy hooks config. Merge, rather than overwrite, so unrelated hooks are preserved. The installer performs this merge only after explicit confirmation, and it resolves the registered command to the actually installed absolute adapter path (for example `${HOME}/bin/agy-hook-notify.sh`), so hook-runtime HOME expansion can never misresolve a staged install. The committed fragment keeps the `~/bin/agy-hook-notify.sh` form for operators merging by hand, which is correct only for a default install under the process HOME.
+
+#### h. Lifecycle adapter setup
+
+The adapter must be executable and able to write both the result file and the runtime event sink. agy delivers one camelCase JSON object per `PostInvocation` on stdin; the adapter requires `transcriptPath`, `conversationId`, and an integer `invocationNum` and exits non-zero without writing anything when a field is missing, malformed, or the transcript is unreadable.
+
+For each accepted invocation it appends exactly one event line to `$CMUX_AGENT_RUNTIME/events/agy-result.ndjson`:
+
+```json
+{"hook_event_name":"PostInvocation","hook":"agy-result-hook","event_id":"<conversationId>:<invocationNum>","executor_session":"<conversationId>","conversation_id":"<conversationId>","invocation_num":3,"transcript_path":"...","transcript_offset":1234,"status":"success"}
+```
+
+Correlation is split by ownership. The hook supplies the invocation identity: `event_id`, `executor_session`, `conversation_id`, `invocation_num`, `transcript_size`, `transcript_path`, and `transcript_offset` (the result-file byte offset where this invocation's fresh segment starts). The supervisor owns `job_nonce`, `workspace`, `surface`, and `cwd` through the active-job mapping recorded before launch, and binds the hook identity to that mapping; it never expects them inside the hook payload.
+
+`event_id` is `<conversationId>:<invocationNum>:<transcriptSize>`. agy resets `invocationNum` to 0 for every user turn (observed on agy 1.1.19), so conversation plus invocation alone would collide across turns of one session; the transcript byte size at delivery is agy-owned, grows monotonically per turn, and is unaffected by this adapter, which makes the triple stable when the same notification is replayed yet distinct for each real turn. Deduplication uses the profile's `deduplicate_by` identity — `event_id` plus `executor_session` — so a replayed notification re-presents the same declared identity and is deduplicated rather than double-counted. `transcript_offset` is deliberately **not** part of the dedupe identity: it is fresh-segment metadata that advances on every accepted capture by design, and folding it into the identity would make replays look like new events.
+
+`status: success` means only that this `PostInvocation` callback ran and captured fresh transcript data. The agy `PostInvocation` payload carries no status or error field, so the adapter synthesizes this value and documents it here rather than inventing richer semantics. It never proves task correctness: completion still requires the correlated nonce-framed marker in the fresh segment, artifact/diff/focused checks, and idle cmux corroboration, all of which fail closed independently.
+
+#### i. Result-file setup
+
+The result file `${HOME}/agi-result.txt` is the transcript source the profile reads, and its path is part of the contract: the installed adapter and the machine-local profile's `transcript.source` must name the same file. There is no override environment variable; relocating the file means editing both together, and a mismatch fails validation instead of silently reading two sources. The hook creates the file on its first append; it is never an empty placeholder installed in advance. Before launch the supervisor records the file identity, byte offset, and mtime; only bytes appended after that boundary count as fresh evidence.
+
+#### j. Harmless validation
+
+Run the repository contract checks, then run a disposable canonical Git checkout in a new `cmux-agent` surface and ask for exactly one harmless artifact. See “Disposable validation record”.
+
+#### k. Troubleshooting
+
+- **“agy profile unavailable”**: verify `agy.json` exists in `$CMUX_AGENT_PROFILE_DIR`, `agy` is on `$PATH`, and `CMUX_AGENT_EXECUTOR=agy` (or `executor_profile: agy`) is set for the job.
+- **Hook never fires / no result file**: verify the agy-result-hook PostInvocation registration points at the correct adapter, and `CMUX_AGENT_RUNTIME` is defined and writable.
+- **Lifecycle event missing or uncorrelated**: confirm `$CMUX_AGENT_RUNTIME/events/agy-result.ndjson` was written and the job’s transcript/conversation mapping is fresh.
+- **Marker appears but the job is not accepted**: screen text or prompt echo is not authoritative; inspect the fresh result segment, lifecycle correlation, artifact/diff/focused checks, and the idle surface.
+- **Missing agy**: do not unset or substitute. Resolve the agy product/credential setup, or leave agy unselected.
+
+#### l. Security/dangerous-mode behavior
+
+The wrapper starts agy with `--dangerously-skip-permissions`. That removes OS permission prompts inside the approved workspace; it does not approve content or widen scope. The pipeline stays fail-closed: `NEED_APPROVAL` holds the executor tool-free until the main agent decides, `QUESTION` is relayed verbatim, and `error`, `aborted`, stale, replayed, malformed, or missing events close the job. The supervisor never adds `--force` or `--yolo`.
+
+#### m. Known limitations
+
+- Only interactive agy is supported here; agy batch/ACP adapters remain future work.
+- The wrapper and hook are compatibility support: they depend on an installed, configured agy product. If agy is absent, leave it unselected and use cursor instead.
+- Hook registration and result-file placement remain explicit operator steps; none of this is implicit or auto-repaired.
 
 ### 5. Switch or verify the selected profile
 
@@ -196,9 +278,9 @@ The installed Cursor CLI also exposes `agent --print --output-format stream-json
 - `~/agi-result.txt` as the result transcript source; and
 - the same nonce-framed markers, explicit cmux surface routing, bounded timeout, artifact checks, and idle corroboration as every profile.
 
-The wrapper and hook are not installed, copied, or modified by this repository. Their absence is a pre-launch failure, not permission to fall back to another CLI or screen-only evidence. The agy profile is compatibility support, not a second supervisor.
+The wrapper and adapter templates are provided in `docs/examples/` and placed locally by the operator; this repository does not silently modify user hooks. A missing wrapper or adapter remains a pre-launch failure, not permission to fall back to another CLI or to screen-only evidence. The agy profile is compatibility support, not a second supervisor.
 
-The current implementation machine has `cmux 0.64.22` and Cursor `agent 2026.08.11-e8db854`, but no `~/bin/agy-with-permissions`, `~/bin/agy-hook-notify.sh`, or `~/agi-result.txt`. Therefore agy live validation is **pending** until a machine with those wrapper/hook files performs the disposable probe.
+The machine represented by this record has `cmux`, Cursor `agent`, and agy with the wrapper, adapter, result source, and `PostInvocation` registration. Live agy validation evidence is recorded below; on any other machine without an installed agy wrapper or adapter, agy remains unselected and the profile fails closed.
 
 ## Disposable validation record
 
@@ -215,10 +297,23 @@ Cursor validation covered by this slice:
 - A `cmux events --category terminal` probe emitted only its subscription acknowledgment, so cmux terminal events are not treated as the primary Cursor transcript/result source.
 - A second harmless job must use a new surface in the reused `cmux-agent` workspace. Timeout/stop, stale-marker, replay/deduplication, acceptable-status, and error-status cases are contract tests and bounded disposable checks; no screen-only completion is valid.
 
+Agy adapter-wiring evidence from the portable templates (this iteration):
+
+- The `agy-hook-notify.sh` lifecycle adapter is exercised against a disposable repo and transcript in `tests/agy-executor-contract.sh`: it reads the camelCase agy `PostInvocation` hook JSON from stdin, appends a bounded transcript tail to a fresh result file, and writes exactly one correlated event line (`hook_event_name: PostInvocation`, `conversation_id`, `transcript_path`, `status: success`) to the configured runtime sink. The test runs only under a temporary home/payload and never touches real hooks, profiles, transcripts, or the result file.
+- Malformed, empty, non-object, and transcript-less payloads fail closed without an event or a fresh result segment.
+- The `agy-with-permissions.sh` wrapper is asserted to launch exactly `agy --dangerously-skip-permissions "$@"` and forwards arguments; it adds no `--force` or `--yolo`.
+- The installer merges the `agy-result-hook` registration into a disposable hooks config while preserving unrelated hook entries.
+- Live wrapper-to-cmux wiring was probed additively in a fresh `cmux-agent` surface: launching the installed wrapper entered the agy product and surfaced the workspace-trust authorization prompt. Per the fail-closed policy the supervisor does not approve such a prompt; cancelling exited cleanly with no trust granted, no artifact created, no model call, and an empty runtime event sink.
+
+**Remaining limitation for agy.** Loading an interactive agy agent consumes the stored agy credentials and a real model call, so this environment treats a fresh interactive run as a credentialed/spending act for an automated PR and does not launch it unprompted. The disposable case evidence already in this workspace (`cmx-agent` at the `cmux-test` checkout, where a harmless one-artifact task created `hello.html` and the result stream recorded a fresh segment ending `<!-- CMX_JOB <nonce> -->` immediately before `<!-- GOAL_COMPLETE -->`) is supporting evidence for the adapter wiring above. A fresh interactive agy probe remains an explicit operator step that must run on a disposable checkout and be cleaned up locally.
+
 The repository's static contract and focused profile tests are the repeatable local gate:
 
 ```bash
 bash tests/cmux-agent-orchestration-contract.sh
 bash tests/executor-profile-contract.sh
+bash tests/agy-executor-contract.sh
+bash -n tests/*.sh docs/examples/*.sh
+python3 -m json.tool <each changed JSON file>
 git diff --check
 ```
