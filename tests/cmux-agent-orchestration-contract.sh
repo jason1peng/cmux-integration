@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# set -e ignores !-negated failures; guard forbidden content explicitly.
+must_absent() {
+  local pattern="$1"
+  shift
+  if grep -Fq -- "$pattern" "$@"; then
+    echo "forbidden content found: $pattern" >&2
+    exit 1
+  fi
+}
+
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 skill="$root/skills/cmux-agent-orchestration/SKILL.md"
 agent="$root/.pi/agents/cmux-agent.md"
@@ -126,11 +136,11 @@ assert "unclassified or consequential question" in agent
 PY
 
 grep -Fq -- 'git -C <cwd> rev-parse --show-toplevel' "$skill"
-! grep -Fq -- 'Reuse an existing dedicated executor pane' "$skill"
-! grep -Fq -- 'Derive `project_name` from the repository root basename' "$skill"
+must_absent 'Reuse an existing dedicated executor pane' "$skill"
+must_absent 'Derive `project_name` from the repository root basename' "$skill"
 # agy command/transcript literals belong to its compatibility profile, not the common skill.
-! grep -Fq -- 'agy-with-permissions' "$skill"
-! grep -Fq -- 'agi-result.txt' "$skill"
+must_absent 'agy-with-permissions' "$skill"
+must_absent 'agi-result.txt' "$skill"
 
 # The supervisor is one generic agent with compatibility aliases and no nested delegation.
 grep -Fq -- 'name: cmux-agent' "$agent"
@@ -138,7 +148,7 @@ grep -Fq -- 'aliases: agy, cmux-agent-supervisor' "$agent"
 grep -Fq -- 'skills: cmux-agent-orchestration, cmux, cmux-workspace' "$agent"
 grep -Fq -- 'maxSubagentDepth: 0' "$agent"
 grep -Fq -- 'tools: read, grep, find, ls, bash' "$agent"
-! grep -Fq -- 'tools: subagent' "$agent"
+must_absent 'tools: subagent' "$agent"
 for supervisor_contract in \
   'executor-ready gate' \
   'cmux read-screen' \

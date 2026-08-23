@@ -380,6 +380,10 @@ for launch_safety in \
   'unquoted concatenation'; do
   grep -Fq -- "$launch_safety" "$profiles_doc"
 done
-! grep -Eq '/Users/|/home/' "$examples"/*.json "$examples"/*.sh
+# set -e ignores !-negated failures; assert leakage bounds explicitly.
+if grep -Eq '/Users/|/home/' "$examples"/*.json "$examples"/*.sh; then
+  echo 'example templates leaked a private path' >&2
+  exit 1
+fi
 
 echo 'executor profile focused contract: PASS'

@@ -20,7 +20,7 @@ set -euo pipefail
 repo=$(cd "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 examples="$repo/docs/examples"
 
-home="${CMURO_AGENT_HOME:-$(printf '%s' "$HOME")}"
+home="${CMUX_AGENT_HOME:-$(printf '%s' "$HOME")}"
 bin_dir="${CMUX_AGENT_BIN:-${home}/bin}"
 hooks_config="${CMUX_AGENT_HOOKS_CONFIG:-${home}/.gemini/config/hooks.json}"
 

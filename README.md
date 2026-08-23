@@ -67,7 +67,7 @@ agy support is compatibility support for an existing agy installation. This repo
 - `~/bin/agy-with-permissions` — executable agy launch wrapper (template: `docs/examples/agy-with-permissions.sh`);
 - `~/bin/agy-hook-notify.sh` — executable `PostInvocation` lifecycle adapter (template: `docs/examples/agy-hook-notify.sh`);
 - a `PostInvocation` hook named `agy-result-hook` registered in the global agy hooks config (fragment: `docs/examples/agy-result-hook.hooks.json`); and
-- `~/agi-result.txt` (or `CMUX_AGENT_RESULT_FILE`) — the agy result/transcript source.
+- `~/agi-result.txt` — the agy result/transcript source. The path is part of the profile contract (the adapter and the profile must agree); it is not an environment override.
 
 The templates are placed locally by the operator (or by `agy-install.sh` with explicit confirmation); this repository never silently creates, copies, or modifies user hooks. Product-specific items (the agy CLI, credentials, and working hook registration) remain the local agy installation. If any agy prerequisite is absent, leave agy unselected and use Cursor; the supervisor fails closed rather than falling back to screen polling.
 
@@ -156,11 +156,11 @@ mkdir -p "$CMUX_AGENT_RUNTIME/jobs" "$CMUX_AGENT_RUNTIME/events"
 bash "$repo/docs/examples/agy-install.sh"
 ```
 
-The installer asks before copying `~/bin/agy-with-permissions` and `~/bin/agy-hook- notify.sh` and before merging the `agy-result-hook` registration into the global agy hooks config. Everything unrelated is preserved.
+The installer asks before copying `~/bin/agy-with-permissions` and `~/bin/agy-hook-notify.sh` and before merging the `agy-result-hook` registration into the global agy hooks config. Everything unrelated is preserved.
 
 ### 2. Result-file setup
 
-The result source is `${HOME}/agi-result.txt` by default, overridable with `CMUX_AGENT_RESULT_FILE`. The hook creates it with its first append; no empty placeholder is installed in advance. Confirm the Pi process can read it and can write the runtime event sink.
+The result source is `${HOME}/agi-result.txt`. The path is fixed by the profile contract so the adapter and the supervisor read the same file; relocating it means changing both the installed adapter and the machine-local `agy.json` `transcript.source` together. The hook creates the file with its first append; no empty placeholder is installed in advance. Confirm the Pi process can read it and can write the runtime event sink.
 
 ### 3. Install the profile
 
@@ -233,7 +233,7 @@ Common failures:
 
 - **Unknown or missing profile:** set `CMUX_AGENT_EXECUTOR` or add `executor_profile` to the job; verify `<profile-id>.json` exists in `$CMUX_AGENT_PROFILE_DIR`.
 - **Cursor lifecycle source unavailable:** verify the adapter is executable, the hook command uses the correct user/project-relative path, and `$CMUX_AGENT_RUNTIME` is writable.
-- **agy lifecycle source unavailable:** verify the installed wrapper in `~/bin`, the `agy-result-hook` `PostInvocation` registration, and the writable result source. The portable templates come from `docs/examples/`; this repository does not silently install them
+- **agy lifecycle source unavailable:** verify the installed wrapper in `~/bin`, the `agy-result-hook` `PostInvocation` registration, and the writable result source. The portable templates come from `docs/examples/`; this repository does not silently install them.
 - **Marker appears but job is not accepted:** screen text/prompt echo is not authoritative; inspect the fresh transcript, lifecycle correlation, expected artifact/checks, and idle state.
 - **Cursor reports `error` or `aborted`:** the event fails closed even if an artifact was created; inspect the fresh transcript and rerun only after resolving the failure.
 

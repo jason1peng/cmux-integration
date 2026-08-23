@@ -2,34 +2,50 @@
 # agy-hook-notify.sh - portable agy `PostInvocation` lifecycle hook.
 # Copy to the machine-local path `~/bin/agy-hook-notify.sh` and review before use.
 #
-# agy invokes this command after it reads (tool calls have finished). agy passes
-# one JSON object on stdin and expects a JSON object back on stdout. Payload keys
-# are camelCase (for example `transcriptPath`, `conversationId`).
+# Target product: the Antigravity-family `agy` CLI (observed as `agy 1.1.13`),
+# which registers named hooks in `~/.gemini/config/hooks.json` and delivers
+# camelCase JSON payloads on stdin (for example `transcriptPath`,
+# `conversationId`, `invocationNum`) expecting a JSON object back on stdout.
 #
 # This adapter only:
-#   1. validates the PostInvocation payload and requires a readable transcriptPath;
-#   2. appends a bounded transcript tail to the machine-local result file used by
-#      the cmux-agent supervisor as its transcript source;
-#   3. appends one normalized lifecycle event line to the cmux-agent runtime sink
-#      so the supervisor can wake and correlate validation; and
-#   4. returns an empty JSON object, which the agy PostInvocation contract requires.
+#   1. validates the `PostInvocation` payload; `transcriptPath`,
+#      `conversationId`, and an integer `invocationNum` are all required, and a
+#      missing or invalid field aborts before anything is written;
+#   2. fails closed when the declared transcript source is unreadable: no
+#      result segment and no lifecycle event may claim success;
+#   3. appends a bounded transcript tail to the machine-local result file
+#      `${HOME}/agi-result.txt`, which is also the profile-declared transcript
+#      source (the path is part of the contract, not an environment override);
+#   4. appends one normalized lifecycle event line to the cmux-agent runtime
+#      sink carrying stable invocation identity for correlation and dedupe;
+#   5. returns an empty JSON object, which the agy hook stdout contract requires.
+#
+# `status: success` means only that this `PostInvocation` callback ran and
+# captured fresh transcript data. It never proves task correctness; the
+# supervisor still requires the correlated nonce-framed marker, artifact and
+# focused checks, and idle cmux corroboration before accepting completion.
+#
+# Correlation split: the hook supplies `executor_session`, `conversation_id`,
+# `event_id`, `transcript_path`, and `transcript_offset`. Supervisor-owned
+# fields (`job_nonce`, `workspace`, `surface`, `cwd`) are bound through the
+# active-job mapping recorded before launch, not invented here.
 #
 # It never approves tools, edits files on the operator's behalf, or grants
-# permission. A missing, empty, non-object, or transcript-less payload fails
-# closed (no event written, non-zero exit). No private path is hard-coded here.
+# permission. No private path is hard-coded here.
 set -euo pipefail
 
 : "${CMUX_AGENT_RUNTIME:?set the machine-local cmux-agent runtime directory}"
-result_file="${CMUX_AGENT_RESULT_FILE:-${HOME}/agi-result.txt}"
+
+result_file="${HOME}/agi-result.txt"
 sink="${CMUX_AGENT_RUNTIME}/events/agy-result.ndjson"
 mkdir -p -- "$(dirname -- "$result_file")" "$(dirname -- "$sink")"
 
 payload=$(cat)
 
-# Normalize and validate the payload. Emits exactly two lines:
-#   line 1: the validated, stripped transcriptPath
-#   line 2: the lifecycle event JSON
-out=$(
+# Validate the camelCase PostInvocation payload. Prints TAB-separated:
+#   transcript_path, conversation_id, invocation_num
+# A missing or malformed field exits non-zero before any file is touched.
+meta=$(
   python3 -c '
 import json
 import sys
@@ -40,36 +56,66 @@ if not raw.strip():
 payload = json.loads(raw)
 if not isinstance(payload, dict):
     raise SystemExit("agy hook payload is not an object")
-transcript_path = payload.get("transcriptPath")
-if not isinstance(transcript_path, str) or not transcript_path.strip():
-    raise SystemExit("agy hook payload is missing a non-empty transcriptPath")
-transcript_path = transcript_path.strip().splitlines()[0]
-conversation_id = payload.get("conversationId")
-conversation_id = conversation_id if isinstance(conversation_id, str) and conversation_id.strip() else ""
-event = {
-    "hook_event_name": "PostInvocation",
-    "hook": "agy-result-hook",
-    "conversation_id": conversation_id,
-    "transcript_path": transcript_path,
-    "status": "success",
-}
-print(transcript_path)
-print(json.dumps(event, separators=(",", ":"), ensure_ascii=True))
+
+
+def required_text(key):
+    value = payload.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise SystemExit(f"agy hook payload is missing a non-empty {key}")
+    return value.strip().splitlines()[0]
+
+
+transcript_path = required_text("transcriptPath")
+conversation_id = required_text("conversationId")
+invocation_num = payload.get("invocationNum")
+if isinstance(invocation_num, bool) or not isinstance(invocation_num, int):
+    raise SystemExit("agy hook payload is missing an integer invocationNum")
+print("\t".join((transcript_path, conversation_id, str(invocation_num))))
 ' <<<"$payload"
 )
 
-transcript_path=$(printf '%s\n' "$out" | head -n 1)
-event=$(printf '%s\n' "$out" | sed -n '2p')
+transcript_path=${meta%%$'\t'*}
+rest=${meta#*$'\t'}
+conversation_id=${rest%%$'\t'*}
+invocation_num=${rest##*$'\t'}
 
-# Capture a bounded transcript tail into the result file so the supervisor can
-# read a fresh appended segment. Tailing never modifies the transcript itself.
-if [[ -n "$transcript_path" && -r "$transcript_path" ]]; then
-  tail -n 200 -- "$transcript_path" >>"$result_file"
-else
+# Fail closed without a success notification when the transcript source is gone.
+if [[ ! -r "$transcript_path" ]]; then
   echo "[$(date -Iseconds)] agy hook: transcriptPath not readable: $transcript_path" >&2
+  exit 1
 fi
 
-# Append exactly one correlated lifecycle event for the supervisor push channel.
+# Record the fresh-segment start boundary (0 before the file exists), then
+# capture a bounded transcript tail. Tailing never modifies the transcript.
+if [[ -e "$result_file" ]]; then
+  transcript_offset=$(wc -c <"$result_file" | tr -d '[:space:]')
+else
+  transcript_offset=0
+fi
+tail -n 200 -- "$transcript_path" >>"$result_file"
+
+# One correlated lifecycle event with stable identity for dedupe/replay checks.
+event=$(
+  python3 -c '
+import json
+import sys
+
+conversation_id, invocation_num, transcript_path, transcript_offset = sys.argv[1:5]
+event = {
+    "hook_event_name": "PostInvocation",
+    "hook": "agy-result-hook",
+    "event_id": f"{conversation_id}:{invocation_num}",
+    "executor_session": conversation_id,
+    "conversation_id": conversation_id,
+    "invocation_num": int(invocation_num),
+    "transcript_path": transcript_path,
+    "transcript_offset": int(transcript_offset),
+    "status": "success",
+}
+print(json.dumps(event, separators=(",", ":")))
+' "$conversation_id" "$invocation_num" "$transcript_path" "$transcript_offset"
+)
+
 printf '%s\n' "$event" >>"$sink"
 
 # The agy PostInvocation hook stdout contract requires a JSON object.
