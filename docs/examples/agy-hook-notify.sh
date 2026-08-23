@@ -85,14 +85,50 @@ if [[ ! -r "$transcript_path" ]]; then
   exit 1
 fi
 
+# agy resets invocationNum to 0 for every user turn (observed on 1.1.19), so
+# conversationId + invocationNum alone collide across turns of one session.
+# The transcript byte size at delivery is agy-owned, monotonic across turns,
+# and unchanged by this adapter, which makes the triple below stable under a
+# replayed notification yet distinct for each real turn.
+transcript_size=$(wc -c <"$transcript_path" | tr -d '[:space:]')
+
 # Record the fresh-segment start boundary (0 before the file exists), then
-# capture a bounded transcript tail. Tailing never modifies the transcript.
+# capture the model-authored content from the recent transcript window.
+# agy transcripts are JSONL whose `content` fields carry real newlines only
+# after JSON decoding (markers arrive as \n escapes inside JSON strings), so
+# appending raw lines would make the profile's adjacent-line nonce-framed
+# marker rule impossible to satisfy. Decoding keeps the result segment as
+# plain text and naturally excludes user-input/prompt-echo entries.
 if [[ -e "$result_file" ]]; then
   transcript_offset=$(wc -c <"$result_file" | tr -d '[:space:]')
 else
   transcript_offset=0
 fi
-tail -n 200 -- "$transcript_path" >>"$result_file"
+python3 - "$transcript_path" >>"$result_file" <<'PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8", errors="replace") as stream:
+        lines = stream.readlines()[-400:]
+except OSError:
+    raise SystemExit(1)
+for line in lines:
+    try:
+        entry = json.loads(line)
+    except (json.JSONDecodeError, ValueError):
+        continue
+    if not isinstance(entry, dict):
+        continue
+    kind = str(entry.get("type", ""))
+    source = str(entry.get("source", ""))
+    # Model-authored output only: never user input, tool results, or echoes.
+    if "RESPONSE" not in kind and "OUTPUT" not in kind and source != "MODEL":
+        continue
+    content = entry.get("content")
+    if isinstance(content, str) and content.strip():
+        sys.stdout.write(content.rstrip("\n") + "\n")
+PY
 
 # One correlated lifecycle event with stable identity for dedupe/replay checks.
 event=$(
@@ -100,20 +136,21 @@ event=$(
 import json
 import sys
 
-conversation_id, invocation_num, transcript_path, transcript_offset = sys.argv[1:5]
+conversation_id, invocation_num, transcript_size, transcript_path, transcript_offset = sys.argv[1:6]
 event = {
     "hook_event_name": "PostInvocation",
     "hook": "agy-result-hook",
-    "event_id": f"{conversation_id}:{invocation_num}",
+    "event_id": f"{conversation_id}:{invocation_num}:{transcript_size}",
     "executor_session": conversation_id,
     "conversation_id": conversation_id,
     "invocation_num": int(invocation_num),
+    "transcript_size": int(transcript_size),
     "transcript_path": transcript_path,
     "transcript_offset": int(transcript_offset),
     "status": "success",
 }
 print(json.dumps(event, separators=(",", ":")))
-' "$conversation_id" "$invocation_num" "$transcript_path" "$transcript_offset"
+' "$conversation_id" "$invocation_num" "$transcript_size" "$transcript_path" "$transcript_offset"
 )
 
 printf '%s\n' "$event" >>"$sink"

@@ -59,14 +59,29 @@ result_file="$runtime/agi-result.txt"
 sink="$runtime/events/agy-result.ndjson"
 trap 'rm -rf "$runtime"' EXIT
 
-# A candidate transcript tail that mirrors the agy transcript JSONL shape,
-# including the nonce-framed completion marker in the final message.
+# A candidate transcript mirroring the real agy JSONL shape: model output in
+# PLANNER_RESPONSE entries with markers arriving as \\n escapes inside JSON
+# strings, plus a USER_REQUEST entry carrying the same markers as prompt echo.
 nonce="agy-contract-nonce-001"
-printf '%s\n' \
-  '{"role":"user","display":"write agy-profile-proof.txt"}' \
-  "{\"role\":\"assistant\",\"display\":\"<!-- CMX_JOB ${nonce} -->\"}" \
-  '{"role":"assistant","display":"<!-- GOAL_COMPLETE -->"}' \
-  >"$transcript"
+python3 - "$transcript" "$nonce" <<'PY'
+import json
+import sys
+
+path, nonce = sys.argv[1], sys.argv[2]
+entries = [
+    {"step_index": 0, "source": "USER", "type": "USER_REQUEST", "status": "DONE",
+     "content": f"Create proof.txt. Reply with:\n<!-- CMX_JOB {nonce} -->\n<!-- GOAL_COMPLETE -->"},
+    {"step_index": 1, "source": "MODEL", "type": "TOOL_CALL_REQUEST", "status": "DONE",
+     "content": "{\"name\": \"create_file\"}"},
+    {"step_index": 2, "source": "TOOL", "type": "TOOL_CALL_RESULT", "status": "DONE",
+     "content": "file written"},
+    {"step_index": 3, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE",
+     "content": f"<!-- CMX_JOB {nonce} -->\n<!-- GOAL_COMPLETE -->"},
+]
+with open(path, "w", encoding="utf-8") as stream:
+    for entry in entries:
+        stream.write(json.dumps(entry) + "\n")
+PY
 
 event_count() {
   if [[ -s "$sink" ]]; then wc -l <"$sink" | tr -d '[:space:]'; else echo 0; fi
@@ -80,32 +95,47 @@ run_adapter() {
 
 valid_payload='{"transcriptPath":"'"$transcript"'","conversationId":"conversation-agy-test","invocationNum":3,"modelName":"auto"}'
 
-# A valid payload emits {}, one lifecycle event, and a bounded fresh result tail.
+# A valid payload emits {}, one lifecycle event, and a DECODED fresh result
+# segment: model-authored lines only, with the nonce-framed marker pair on
+# adjacent REAL lines despite arriving as JSON escapes, and no prompt echo.
 stdout=$(run_adapter "$valid_payload")
 [[ "$stdout" == '{}' ]]
 [[ "$(event_count)" -eq 1 ]]
-tail -n 3 "$transcript" >"$runtime/expected-tail.txt"
-diff -u "$runtime/expected-tail.txt" "$result_file" >/dev/null
+python3 - "$result_file" "$nonce" <<'PY'
+import re
+import sys
+
+segment = open(sys.argv[1], encoding="utf-8").read()
+nonce = sys.argv[2]
+framed = re.compile(rf"^<!-- CMX_JOB {re.escape(nonce)} -->$\n^<!-- GOAL_COMPLETE -->$", re.M)
+assert framed.search(segment), (
+    "decoded segment must contain the nonce-framed marker on adjacent real lines"
+)
+assert len(framed.findall(segment)) == 1, "prompt-echo entries must be excluded"
+assert "Reply with:" not in segment, "user-request echo must not be captured"
+assert "file written" not in segment, "tool results must not be captured"
+PY
 
 # The normalized event must carry the profile's full dedupe identity plus the
 # hook-sourced correlation identity, with a stable event_id derived from the
-# real agy conversation/invocation pair.
+# real agy conversation/invocation/transcript-size triple.
 python3 - "$sink" "$transcript" <<'PY'
-import json
-import sys
+import json, os, sys
 
 sink, transcript = sys.argv[1], sys.argv[2]
 events = [json.loads(line) for line in open(sink, encoding="utf-8") if line.strip()]
 event = events[-1]
 required = {
     "hook_event_name", "hook", "event_id", "executor_session",
-    "conversation_id", "invocation_num", "transcript_path",
-    "transcript_offset", "status",
+    "conversation_id", "invocation_num", "transcript_size",
+    "transcript_path", "transcript_offset", "status",
 }
 missing = required - set(event)
 assert not missing, f"event missing identity fields: {sorted(missing)}"
 assert event["executor_session"] == event["conversation_id"] == "conversation-agy-test"
-assert event["event_id"] == "conversation-agy-test:3"
+size = os.path.getsize(transcript)
+assert event["transcript_size"] == size
+assert event["event_id"] == f"conversation-agy-test:3:{size}"
 assert event["transcript_path"] == transcript
 assert event["transcript_offset"] == 0, "first capture must start at byte 0"
 assert event["status"] == "success"
@@ -141,17 +171,26 @@ PY
 # Stale/foreign session: a different conversation produces a different
 # declared identity, so it is never mistaken for the active job's replay.
 run_adapter '{"transcriptPath":"'"$transcript"'","conversationId":"conversation-other-test","invocationNum":3}' >/dev/null
+# Cross-turn collision: agy resets invocationNum to 0 each user turn (observed
+# on 1.1.19). A new turn with the same conversation and invocationNum but a
+# grown transcript MUST produce a distinct declared identity.
+printf '%s\n' '{"step_index":9,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"turn two"}' >>"$transcript"
+run_adapter '{"transcriptPath":"'"$transcript"'","conversationId":"conversation-agy-test","invocationNum":3}' >/dev/null
 python3 - "$sink" "$profile_json" <<'PY'
 import json
 import sys
 
 events = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
-profile = json.load(open(sys.argv[2], encoding="utf-8"))
-keys = profile["lifecycle"]["deduplicate_by"]
+keys = json.load(open(sys.argv[2], encoding="utf-8"))["lifecycle"]["deduplicate_by"]
 def identity(event):
     return tuple(event[key] for key in keys)
-assert identity(events[-1]) != identity(events[0]), "a foreign session must not reuse identity"
-assert events[-1]["executor_session"] == "conversation-other-test"
+foreign = events[-2]
+turn_two = events[-1]
+first = events[0]
+assert foreign["executor_session"] == "conversation-other-test", "foreign session must be captured"
+assert turn_two["conversation_id"] == first["conversation_id"]
+assert turn_two["invocation_num"] == first["invocation_num"], "fixture must reproduce the per-turn reset"
+assert identity(turn_two) != identity(first), "a new turn must not collide with an earlier one"
 PY
 
 # 3. Fail-closed inputs: missing/malformed identity fields, non-object payloads,
