@@ -82,8 +82,7 @@
     ],
     "deduplicate_by": [
       "event_id",
-      "executor_session",
-      "transcript_offset"
+      "executor_session"
     ]
   },
   "stop": {

@@ -90,7 +90,7 @@ merge_or_write_hooks() {
       echo "Skipped hooks.json merge."
       return 0
     fi
-    python3 - "$hooks_config" "$source_registration" <<'PY'
+    python3 - "$hooks_config" "$source_registration" "$adapter_target" <<'PY'
 import copy
 import json
 import shutil
@@ -106,7 +106,15 @@ with open(fragment_path, encoding="utf-8") as stream:
     fragment = json.load(stream)
 if set(fragment) != {"agy-result-hook"}:
     raise SystemExit("unexpected registration fragment; refusing to edit")
+# Resolve the registered command to the actually installed adapter. The
+# committed fragment uses `~/bin/...`, which agy expands against the process
+# HOME at hook runtime; a staging install via CMUX_AGENT_HOME would otherwise
+# register a command that resolves to the wrong home.
+adapter_path = sys.argv[3]
 new_entry = fragment["agy-result-hook"]
+for handler in new_entry.get("PostInvocation", []):
+    if isinstance(handler, dict) and handler.get("command"):
+        handler["command"] = adapter_path
 if config.get("agy-result-hook") not in (None, new_entry):
     shutil.copy2(config_path, config_path + ".bak")
     print("Backed up existing config to " + config_path + ".bak", file=sys.stderr)
@@ -128,7 +136,7 @@ PY
       return 0
     fi
     mkdir -p -- "$(dirname -- "$hooks_config")"
-    python3 - "$hooks_config" "$source_registration" <<'PY'
+    python3 - "$hooks_config" "$source_registration" "$adapter_target" <<'PY'
 import json
 import shutil
 import sys
@@ -137,6 +145,11 @@ config_path = sys.argv[1]
 fragment_path = sys.argv[2]
 with open(fragment_path, encoding="utf-8") as stream:
     fragment = json.load(stream)
+adapter_path = sys.argv[3]
+entry = fragment["agy-result-hook"]
+for handler in entry.get("PostInvocation", []):
+    if isinstance(handler, dict) and handler.get("command"):
+        handler["command"] = adapter_path
 tmp = config_path + ".tmp"
 with open(tmp, "w", encoding="utf-8") as stream:
     json.dump(fragment, stream, indent=2)

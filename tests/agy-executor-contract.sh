@@ -111,33 +111,47 @@ assert event["transcript_offset"] == 0, "first capture must start at byte 0"
 assert event["status"] == "success"
 PY
 
-# Replay: the identical payload re-presents the same stable identity so the
-# supervisor can deduplicate it by event_id/executor_session, while each
-# accepted capture advances the fresh-segment boundary.
+# Replay: applying the profile's DECLARED deduplicate_by identity must treat
+# the identical payload as the same event (dedupe catches it), while each
+# accepted capture still advances the fresh-segment boundary metadata.
 before=$(event_count)
 stdout=$(run_adapter "$valid_payload")
 [[ "$stdout" == '{}' ]]
 [[ "$(event_count)" -eq $((before + 1)) ]]
-python3 - "$sink" <<'PY'
+python3 - "$sink" "$profile_json" <<'PY'
 import json
 import sys
 
 events = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
-assert events[-1]["event_id"] == events[0]["event_id"], "replay must keep a stable event_id"
+profile = json.load(open(sys.argv[2], encoding="utf-8"))
+keys = profile["lifecycle"]["deduplicate_by"]
+assert keys, "profile must declare a dedupe identity"
+
+def identity(event):
+    return tuple(event[key] for key in keys)
+
+assert identity(events[0]) == identity(events[1]), (
+    f"replay of the same invocation must match the declared {keys} identity"
+)
 assert events[-1]["transcript_offset"] != events[0]["transcript_offset"], (
-    "each accepted capture must advance the fresh-segment boundary"
+    "offset is fresh-segment metadata and must advance per capture"
 )
 PY
 
-# Stale/foreign session: a different conversation produces different identity.
+# Stale/foreign session: a different conversation produces a different
+# declared identity, so it is never mistaken for the active job's replay.
 run_adapter '{"transcriptPath":"'"$transcript"'","conversationId":"conversation-other-test","invocationNum":3}' >/dev/null
-python3 - "$sink" <<'PY'
+python3 - "$sink" "$profile_json" <<'PY'
 import json
 import sys
 
 events = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+profile = json.load(open(sys.argv[2], encoding="utf-8"))
+keys = profile["lifecycle"]["deduplicate_by"]
+def identity(event):
+    return tuple(event[key] for key in keys)
+assert identity(events[-1]) != identity(events[0]), "a foreign session must not reuse identity"
 assert events[-1]["executor_session"] == "conversation-other-test"
-assert events[-1]["event_id"] != events[0]["event_id"], "a foreign session must not reuse identity"
 PY
 
 # 3. Fail-closed inputs: missing/malformed identity fields, non-object payloads,
@@ -232,9 +246,10 @@ import sys
 
 config = json.load(open(sys.argv[1], encoding="utf-8"))
 assert "unrelated-hook" in config, "installer dropped an unrelated hook"
-assert "agy-result-hook" in config
 entry = config["agy-result-hook"]["PostInvocation"][0]
-assert entry["command"].endswith("agy-hook-notify.sh")
+# The installer resolves the command to the actually installed adapter path,
+# not the ~/ relative fragment form, so hook runtime HOME cannot misresolve it.
+assert entry["command"] == sys.argv[1].replace("/.gemini/config/hooks.json", "/bin/agy-hook-notify.sh"), entry["command"]
 PY
 rm -rf "$case_home"
 
@@ -253,6 +268,11 @@ import sys
 
 config = json.load(open(sys.argv[1], encoding="utf-8"))
 assert set(config) == {"agy-result-hook"}
+entry = config["agy-result-hook"]["PostInvocation"][0]
+# Staging install: the registered command must resolve to the SELECTED home's
+# adapter, not to the process HOME via an unexpanded `~`.
+expected = sys.argv[1].replace("/.gemini/config/hooks.json", "/bin/agy-hook-notify.sh")
+assert entry["command"] == expected, entry["command"]
 PY
 [[ ! -e "$real_home/bin/agy-with-permissions" ]]
 [[ ! -e "$real_home/bin/agy-hook-notify.sh" ]]
