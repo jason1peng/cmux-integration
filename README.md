@@ -52,7 +52,7 @@ Screen output alone, an exit code alone, or a hook event alone never proves comp
 - `cmux` installed and usable (`cmux ping` should return `PONG`).
 - A disposable or approved working directory for the executor job.
 - A writable machine-local runtime directory.
-- `python3` for the checked-in Cursor hook adapter.
+- `python3` for the checked-in hook adapters: the Cursor stop adapter and the agy lifecycle adapter and installer all require it.
 
 ### Additional Cursor requirements
 

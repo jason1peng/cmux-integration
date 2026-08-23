@@ -104,7 +104,7 @@ The agy profile is compatibility support for an existing agy installation. This 
 
 #### a. Prerequisites
 
-The supported product is the Antigravity-family `agy` CLI (the contract here was validated against `agy 1.1.13`), which registers named lifecycle hooks in the global config `~/.gemini/config/hooks.json` and delivers camelCase JSON payloads to hook commands on stdin. This is not the standard Gemini CLI hook model; do not substitute another CLI. agy must be installed and on `$PATH` so `agy --version` identifies the CLI, and the machine must supply the agy product configuration (for example credentials and an identity). This repository does not install or configure agy, its model/credential store, or its identity. If agy is absent or unconfigured, do not select the `agy` profile; the supervisor fails closed rather than falling back to another CLI.
+The supported product is the Antigravity-family `agy` CLI (the contract here was validated against `agy 1.1.13`), which registers named lifecycle hooks in the global config `~/.gemini/config/hooks.json` and delivers camelCase JSON payloads to hook commands on stdin. This is not the standard Gemini CLI hook model; do not substitute another CLI. agy must be installed and on `$PATH` so `agy --version` identifies the CLI, `python3` must be available for the lifecycle adapter and installer, and the machine must supply the agy product configuration (for example credentials and an identity). This repository does not install or configure agy, its model/credential store, or its identity. If agy is absent or unconfigured, do not select the `agy` profile; the supervisor fails closed rather than falling back to another CLI.
 
 #### b. What this repository provides
 
