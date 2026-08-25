@@ -100,7 +100,13 @@ for policy in \
   'MUST be recorded' \
   'trust/authorization' \
   'always escalate' \
-  'executor must remain tool-free'; do
+  'executor must remain tool-free' \
+  'routine-command-v1' \
+  'fifteen seconds of quiet' \
+  '15/30/60-second backoff' \
+  'exact displayed command' \
+  'mandatory escalation categories' \
+  'advisor failure is fail-closed'; do
   grep -Fq -- "$policy" "$skill"
 done
 
@@ -204,14 +210,16 @@ for template in \
   "$examples/agy-result-hook.hooks.json" \
   "$examples/agy-with-permissions.sh" \
   "$examples/agy-hook-notify.sh" \
-  "$examples/agy-install.sh"; do
+  "$examples/agy-install.sh" \
+  "$examples/cursor-advisor.sh"; do
   [[ -s "$template" ]]
 done
 for executable in \
   "$examples/cursor-stop-notify.sh" \
   "$examples/agy-with-permissions.sh" \
   "$examples/agy-hook-notify.sh" \
-  "$examples/agy-install.sh"; do
+  "$examples/agy-install.sh" \
+  "$examples/cursor-advisor.sh"; do
   [[ -x "$executable" ]]
 done
 

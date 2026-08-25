@@ -23,7 +23,7 @@
     },
     "idle": {
       "kind": "screen",
-      "description": "Cursor interactive follow-up prompt after the turn"
+      "description": "Cursor interactive follow-up/idle prompt after a settled turn"
     },
     "question": {
       "kind": "screen",
@@ -34,19 +34,114 @@
     "prompt": {
       "kind": "cmux-send",
       "requires_workspace": true,
-      "requires_surface": true
+      "requires_surface": true,
+      "submit_key": "ctrl+enter",
+      "encoding": "interactive-tui"
     },
     "continuation": {
       "kind": "cmux-send",
       "requires_workspace": true,
-      "requires_surface": true
+      "requires_surface": true,
+      "submit_key": "ctrl+enter",
+      "encoding": "interactive-tui"
     }
   },
   "transcript": {
     "source": "${CMUX_AGENT_RUNTIME}/jobs/${job_nonce}/cursor.pty-result.ndjson",
-    "kind": "per-job-pty-result",
-    "freshness": "new-source-or-appended-segment-after-launch",
-    "prompt_echo_rule": "reject markers present only in submitted input, reflected prompt echo, or screen text"
+    "kind": "hook-provided-cursor-jsonl",
+    "freshness": "supervisor mapping source.start_offset, source.launch_mtime_ns, source.exists_at_launch, and source.created_after_launch are required; zero is valid only for a source created after launch; existing sources require path/device/inode/size/mtime identity; reject truncation, replacement, and stale source identity",
+    "prompt_echo_rule": "exclude user records and exact or segment prompt echoes; reject markers present only in submitted input, reflected prompt echo, or screen text",
+    "authoritative_content": "only fresh assistant/tool records normalized from the first usable hook-provided transcript_path",
+    "bridge": {
+      "required": true,
+      "status": "additive hook observations and transcript capture",
+      "command": "${HOME}/.cursor/hooks/cursor-transcript-bridge.sh",
+      "mapping": "${CMUX_AGENT_RUNTIME}/jobs/${job_nonce}/cursor.mapping.json",
+      "event_sink": "${CMUX_AGENT_RUNTIME}/events/cursor-transcript-bridge.ndjson",
+      "events": [
+        "sessionStart",
+        "beforeSubmitPrompt",
+        "afterAgentThought",
+        "afterFileEdit",
+        "afterShellExecution",
+        "afterAgentResponse",
+        "stop"
+      ],
+      "path_rule": "capture the first usable non-null CURSOR_TRANSCRIPT_PATH or transcript_path supplied by a correlated hook; null or future paths are observations only; never scan undocumented Cursor directories",
+      "normalization": "fresh complete JSONL records after the supervisor boundary; preserve source offsets; exclude user records and exact/segment prompt echoes; deduplicate semantic replay; reject malformed/truncated/replaced/uncorrelated sources"
+    }
+  },
+  "watcher": {
+    "command": "${CMUX_AGENT_CONFIG}/bin/cursor-result-watcher.sh",
+    "protocol": "ndjson-state-change",
+    "sink": "${CMUX_AGENT_RUNTIME}/jobs/${job_nonce}/cursor.watcher.ndjson",
+    "advisor_sink": "${CMUX_AGENT_RUNTIME}/jobs/${job_nonce}/cursor.advisor.ndjson",
+    "poll_interval_ms": 250,
+    "poll_strategy": "stat identity plus persisted byte cursors; bounded appended NDJSON reads only",
+    "max_append_read_bytes": 262144,
+    "pane_fallback_after_seconds": 5,
+    "classifications": [
+      "QUESTION",
+      "IDLE",
+      "WORKING",
+      "LOST",
+      "UNKNOWN"
+    ],
+    "pane_rule": "read only the exact recorded workspace/surface after five seconds without result activity; explicit follow-up/idle corroboration is required; no automatic approvals",
+    "advisor": {
+      "enabled": "optional",
+      "kind": "bounded-local-llm-advisor",
+      "command": "${CMUX_AGENT_CONFIG}/bin/cursor-advisor.sh",
+      "protocol": "strict-json-recommendation",
+      "quiet_trigger_after_seconds": 15,
+      "timeout_seconds": 5,
+      "backoff_seconds": [15, 30, 60],
+      "backoff_cap_seconds": 60,
+      "reset_on": "fresh correlated transcript or bridge-event activity",
+      "policy": "routine-command-v1",
+      "routine_command_allowlist": [
+        "pwd",
+        "ls",
+        "find",
+        "rg",
+        "grep",
+        "cat",
+        "head",
+        "tail",
+        "sed",
+        "git status",
+        "git diff",
+        "git log",
+        "git show",
+        "git rev-parse",
+        "git branch",
+        "git ls-files"
+      ],
+      "mandatory_escalation_categories": [
+        "destructive",
+        "credential",
+        "deployment",
+        "external-network",
+        "ambiguous",
+        "important"
+      ],
+      "approval_rule": "only an exact displayed command accepted independently by the bounded read-only policy may be recommended as routine; the advisor never sends approval",
+      "failure_rule": "malformed, timed out, unavailable, or non-routine advisor responses fail closed and escalate"
+    }
+  },
+  "supervisor_mapping": {
+    "required": true,
+    "file": "${CMUX_AGENT_RUNTIME}/jobs/${job_nonce}/cursor.mapping.json",
+    "result_protocol": "cursor-hook-bridge",
+    "exports": [
+      "CMUX_AGENT_JOB_NONCE",
+      "CMUX_AGENT_RUNTIME",
+      "CMUX_AGENT_JOB_RUNTIME",
+      "CMUX_AGENT_WORKSPACE",
+      "CMUX_AGENT_SURFACE",
+      "CMUX_AGENT_CWD"
+    ],
+    "ownership": "supervisor-generated and supervisor-validated; job text, profile argv, hook payloads, and pane text cannot override identity"
   },
   "result": {
     "marker_rule": "nonce-framed-marker-in-fresh-transcript-result-segment",
@@ -55,40 +150,48 @@
       "git diff --check",
       "declared focused checks pass"
     ],
-    "idle_corroboration": true
+    "idle_corroboration": true,
+    "turn_settled_gate": "fresh correlated assistant marker plus artifact/check evidence plus no active question/approval plus explicitly targeted pane at normal follow-up/idle prompt"
   },
   "lifecycle": {
-    "event": "stop",
-    "source": "cursor-hooks-stop-adapter",
+    "event": "cursor-transcript-bridge",
+    "source": "cursor-hooks-transcript-bridge",
     "hook_config": "${HOME}/.cursor/hooks.json",
-    "hook_sink": "${CMUX_AGENT_RUNTIME}/events/cursor-stop.ndjson",
-    "adapter": "${HOME}/.cursor/hooks/cursor-stop-notify.sh",
+    "event_sink": "${CMUX_AGENT_RUNTIME}/events/cursor-transcript-bridge.ndjson",
     "required": true,
     "acceptable_statuses": [
+      "observed",
       "success",
       "completed",
       "ok"
     ],
     "failure_statuses": [
       "error",
-      "aborted"
+      "aborted",
+      "failed"
     ],
     "correlation": [
       "job_nonce",
+      "executor_session",
       "conversation_id",
       "generation_id",
       "session_id",
       "workspace",
       "surface",
       "cwd",
-      "transcript_path"
+      "transcript_path",
+      "event_id"
     ],
     "deduplicate_by": [
       "event_id",
-      "session_id",
-      "conversation_id",
+      "executor_session",
       "generation_id"
-    ]
+    ],
+    "optional_wakeups": [
+      "stop",
+      "afterAgentResponse"
+    ],
+    "optional_stop_status_rule": "stop is a wakeup/status check; stop error or aborted fails closed; missing stop never downgrades transcript, artifact, and idle validation"
   },
   "stop": {
     "mode": "profile-command-with-explicit-surface",

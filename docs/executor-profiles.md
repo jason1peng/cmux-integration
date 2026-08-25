@@ -63,16 +63,25 @@ The `agy`/`cmux-agent-supervisor` names are aliases for the generic supervisor; 
 
 ### 2. Configure the lifecycle source
 
-Both profiles require a lifecycle notification. A hook event only wakes validation; it never proves task correctness. The shared completion gate still requires a fresh correlated transcript/result marker, expected artifacts/checks, and idle cmux corroboration.
+Both profiles require a lifecycle notification/result source. A hook event only wakes validation; it never proves task correctness. For Cursor, the hook-provided transcript is authoritative content while hooks remain asynchronous observations. The shared completion gate still requires a fresh correlated assistant marker, expected artifacts/checks, no active question, and idle cmux corroboration.
 
 | Profile | Launch | Lifecycle setup | Result source | Supplied by this repository |
 | --- | --- | --- | --- | --- |
-| `cursor` | `agent --trust` | Cursor `stop` hook and `cursor-stop-notify.sh` adapter | Per-job Cursor transcript/result plus the adapter event sink | Profile, adapter, and project/user hook templates |
+| `cursor` | `agent --trust` | Additive Cursor bridge hooks; `stop`/`afterAgentResponse` are optional wakeups | Hook-provided Cursor JSONL normalized per-job result plus correlated bridge events | Profile, bridge/watcher, adapters, and project/user hook templates |
 | `agy` | `~/bin/agy-with-permissions` (portable template) | agy `PostInvocation` `agy-result-hook` against the portable `agy-hook-notify.sh` adapter plus the result file and runtime sink | `~/agi-result.txt` plus the agy lifecycle event | Templates provided; operator installs the wrapper/adapter and registers the hook locally |
 
 A missing executable, hook, event sink, transcript source, or required registration is a pre-launch failure. Do not create dummy files or silently fall back to screen polling.
 
 ### 3. Cursor setup
+
+The Cursor profile invokes a machine-local watcher at `${CMUX_AGENT_CONFIG}/bin/cursor-result-watcher.sh`. Install the reviewed disposable template explicitly before selecting the profile; the supervisor never creates or repairs this executable:
+
+```bash
+mkdir -p "$CMUX_AGENT_CONFIG/bin"
+cp "$repo/docs/examples/cursor-result-watcher.sh" \
+   "$CMUX_AGENT_CONFIG/bin/cursor-result-watcher.sh"
+chmod +x "$CMUX_AGENT_CONFIG/bin/cursor-result-watcher.sh"
+```
 
 Install the adapter in the supported user-hook location:
 
@@ -243,31 +252,46 @@ The common completion gate is unchanged for every profile:
 
 ## Cursor interactive profile
 
-`docs/examples/executor-profile.cursor.json` is a template for the first alternative executor. It intentionally launches the normal interactive Cursor CLI as:
+`docs/examples/executor-profile.cursor.json` is the supported Cursor template. It intentionally launches the original non-headless interactive CLI as:
 
 ```text
 agent --trust
 ```
 
-`--trust` is an explicit profile decision for the operator-approved disposable/project directory. It is not a blanket approval policy. Normal interactive mode can edit files without `--force`; tool/shell approvals still remain explicit decisions and must be routed or escalated by the supervisor. The template sets `dangerous`, `force`, and `yolo` to `false`; do not add `--force` or `--yolo` as a supervisor fallback.
+`--trust` is an explicit profile decision for the operator-approved disposable/project directory. It is not blanket content approval. Normal interactive mode can edit files without `--force`; tool/shell approvals remain explicit decisions and must be routed or escalated. The template sets `dangerous`, `force`, and `yolo` to `false`; the supervisor never adds those flags. Cursor batch (`--print --output-format stream-json`) and ACP remain deferred.
 
-The read-only readiness smoke probe used `agent --mode=ask --trust`; that mode is not the artifact-producing profile because Cursor documents Ask mode as read-only.
+The profile's ready/idle/question probes are bounded screen corroboration. Prompt and continuation input are sent through the exact recorded cmux workspace/surface, and `ctrl+enter` is the verified TUI submit action. Before launch, the supervisor writes a fresh `cursor.mapping.json` containing the job nonce, canonical cwd, workspace, surface, prompt, source identity, and source boundary. It exports the per-job runtime on `CMUX_AGENT_JOB_RUNTIME` in addition to the common supervisor mapping. Hook payloads and pane text cannot replace those fields.
 
-The profile's ready/idle/question probes are based on the observed Cursor interactive states. Prompt and continuation input are sent through the exact cmux workspace and surface recorded for this job. Before launch, the supervisor creates the per-job runtime directory and records the Cursor `transcript_path` plus the bounded PTY/result segment into the declared fresh source; it does not use a global unframed screen dump.
+### Hook-provided transcript bridge
 
-### Cursor stop hook
+`docs/examples/cursor-transcript-bridge.sh` is an additive command-hook adapter. Register it for `sessionStart`, `beforeSubmitPrompt`, `afterAgentThought`, `afterFileEdit`, `afterShellExecution`, and optionally `afterAgentResponse`; register it alongside the existing stop adapter. Hooks are notifications only: they are asynchronous wakeups and identity/path observations. The bridge accepts the first usable non-null `transcript_path` from a correlated hook payload, or the supplied `CURSOR_TRANSCRIPT_PATH` fallback only when it resolves to a readable regular file. Null/future paths remain observations until a later hook supplies a usable source. The bridge never scans undocumented Cursor directories.
 
-Cursor's supported user- or project-local `hooks.json` is the primary lifecycle notification source. The profile template uses the user location `${HOME}/.cursor/hooks.json` and the adapter `${HOME}/.cursor/hooks/cursor-stop-notify.sh`; the merged user registration must use the relative command `hooks/cursor-stop-notify.sh` because user hooks run from `${HOME}/.cursor`. For a project-local disposable check, place the merged file at the CLI's project hook location `.cursor/hooks.json`, copy the adapter to `.cursor/hooks/cursor-stop-notify.sh`, and use the project-relative command shown in `docs/examples/cursor-hooks.json`. The two command paths are intentionally different: Cursor resolves them relative to their hook location, and `${CMUX_AGENT_CONFIG}` is not a hook-command expansion. Merge the registration into the operator's existing `hooks.json` rather than overwriting it. Registration is an explicit machine-local setup step; the supervisor never writes the file or changes existing hooks. The adapter command includes a bounded five-second timeout in the template so a broken sink cannot hold a Cursor turn indefinitely.
+The bridge reads only the hook-provided JSONL source after the supervisor boundary. It requires source start offset, launch mtime, existence/creation identity, and path/device/inode/size/mtime checks; it rejects malformed JSONL, stale or uncorrelated sessions, source truncation, replacement, and in-place prefix changes. It normalizes only fresh assistant/tool records, preserves source offsets, excludes user records, removes exact or line-segment prompt echoes without dropping nearby legitimate assistant text, and deduplicates semantic replay. When a transcript record supplies session, conversation, generation, cwd, workspace, or surface identity, every value must match the hook identity and supervisor mapping; foreign records are rejected before filtering. A `stop`/hook `error` or `aborted` status is latched in the per-job bridge state, and all later callbacks remain failed closed even if they report success. Its per-job result at `${CMUX_AGENT_RUNTIME}/jobs/${job_nonce}/cursor.pty-result.ndjson` is the authoritative content source. The bridge event sink is a wakeup/identity source, not a completion proof. Inside Cursor hook processes, the supervisor passes the per-job runtime as `CMUX_AGENT_JOB_RUNTIME`; Cursor reserves/overwrites the common `CMUX_AGENT_RUNTIME` name.
 
-The adapter should read the Cursor stop-event JSON and append one event per line to the configured machine-local sink. The observed event includes `hook_event_name: stop`, executor session identifiers, `status`, and `transcript_path`; the checked-in adapter preserves and validates those fields without granting approval or declaring success. Cursor does not provide the cmux surface or job nonce in the hook payload, so the supervisor records an active mapping before launch and correlates `conversation_id`, `generation_id`, `session_id`, and `transcript_path` to the active job, then binds that event to the job nonce, workspace, surface, and canonical cwd. Event identity must be stable enough to deduplicate reconnect/replay notifications. A hook status of `error` or `aborted`, a missing event, an unavailable sink, an uncorrelated session, or a malformed payload fails closed.
+### Optional Cursor stop hook and response wakeups
 
-A `stop` event means that a Cursor turn ended. Cursor stop-hook notifications only wake validation; they are not proof of task correctness. It does **not** prove that the requested work or artifact succeeded. The supervisor still requires acceptable status, fresh correlated transcript/result evidence, nonce-framed marker excluding prompt echo, artifact/diff/focused checks, and idle cmux corroboration. Multiple stop events in a multi-turn job are expected and must not bypass the gate.
+The stop adapter writes `${CMUX_AGENT_RUNTIME}/events/cursor-stop.ndjson` and returns `{}` so Cursor command-hook execution remains valid. `stop` and `afterAgentResponse` are optional wakeups: an accepted stop status can trigger validation, `error` or `aborted` fails closed, and missing stop never downgrades transcript validation. The existing Agoda monitoring hook is preserved; registration is an explicit operator action, and this repository never writes user hooks, credentials, profiles, transcripts, or runtime state.
 
-The repository does not include a real hook file or event sink. This keeps credentials, user paths, and machine-local hook state out of Git.
+### Turn-settled completion gate and watcher
 
-### Cursor batch and ACP follow-ups
+The supervisor accepts a Cursor job only when a fresh correlated normalized assistant record contains the current nonce-framed marker, expected artifacts/checks pass, no approval/question is active, and the explicitly targeted surface is alive at the normal follow-up/idle prompt. A marker in submitted input, user/prompt echo, stale/replayed data, or screen text is rejected. The local `cursor-result-watcher.sh` polls bridge result/event activity at bounded intervals using `stat` identity checks and persisted byte cursors, reads only bounded appended NDJSON chunks, emits `QUESTION`, `WORKING`, `IDLE`, `LOST`, and `UNKNOWN` transitions only when the state changes, and reads the exact surface only after five seconds without result activity. Working indicators outrank generic follow-up text. The watcher never approves, answers, retries, or supplies result content.
 
-The installed Cursor CLI also exposes `agent --print --output-format stream-json` and `agent acp`. They remain follow-ups, not default transports: a probe produced a structured assistant event but also reconnected/replayed assistant output. A dedicated adapter still needs terminal-result detection, replay/deduplication, approval routing, cwd binding, and artifact semantics. Do not report a batch assistant event as task completion.
+#### Optional quiet-period advisor and safe-command policy
+
+The Cursor profile advertises an optional bounded local LLM advisor command at `${CMUX_AGENT_CONFIG}/bin/cursor-advisor.sh`. Install the reviewed disposable reference adapter when this bounded recommendation channel is desired; it is deterministic by default and can be replaced by a local LLM adapter that preserves the strict response schema:
+
+```bash
+mkdir -p "$CMUX_AGENT_CONFIG/bin"
+cp "$repo/docs/examples/cursor-advisor.sh" \
+   "$CMUX_AGENT_CONFIG/bin/cursor-advisor.sh"
+chmod +x "$CMUX_AGENT_CONFIG/bin/cursor-advisor.sh"
+```
+
+The watcher invokes the configured advisor only after **15 seconds of quiet** following the latest correlated transcript/bridge-event activity. Calls use a persisted **15/30/60-second backoff capped at 60 seconds**; any fresh result or bridge-event activity resets the attempt counter and next due time. The advisor receives one bounded JSON snapshot and must return exactly one strict JSON recommendation using policy `routine-command-v1`. A recommendation is never an approval: the supervisor owns the decision and sends any response through the explicit cmux surface.
+
+Only an exact displayed command from the question may be recommended as `decision: approve`, and the watcher independently allows only read-only local commands from this list: `pwd`, `ls`, `find`, `rg`, `grep`, `cat`, `head`, `tail`, `sed`, and read-only `git status`, `git diff`, `git log`, `git show`, `git rev-parse`, `git branch`, or `git ls-files`. Shell operators, substitution, chaining, malformed quoting, unknown commands, and command text that is not exact are not routine. Mandatory escalation categories are `destructive`, `credential`, `deployment`, `external-network`, `ambiguous`, and `important` (including trust/authorization, authentication, spending, irreversible, or scope-expanding decisions). The watcher overrides an unsafe advisor approval into escalation. An unavailable, timed-out, malformed, or otherwise invalid advisor response fails closed and escalates; an unconfigured optional advisor is simply disabled.
+
+For hook setup, copy the bridge and stop adapters to the selected user or disposable project hook directory and merge the relevant entries from `docs/examples/cursor-hooks.json` without replacing unrelated hooks. User commands are relative to `${HOME}/.cursor`; project commands are relative to `.cursor`. The project-relative command is `.cursor/hooks/cursor-transcript-bridge.sh`; do not substitute `${CMUX_AGENT_CONFIG}` for either path. The hook template uses a bounded five-second timeout.
 
 ## agy compatibility profile
 
@@ -297,6 +321,17 @@ Cursor validation covered by this slice:
 - A `cmux events --category terminal` probe emitted only its subscription acknowledgment, so cmux terminal events are not treated as the primary Cursor transcript/result source.
 - A second harmless job must use a new surface in the reused `cmux-agent` workspace. Timeout/stop, stale-marker, replay/deduplication, acceptable-status, and error-status cases are contract tests and bounded disposable checks; no screen-only completion is valid.
 
+### CMX-004 interactive live-validation record
+
+The following disposable run records the complete interactive consumer path; it is evidence, not machine-local configuration to copy:
+
+- **Launch and routing:** Cursor `2026.08.11-e8db854` was launched as `agent --trust` in a fresh `cmux-agent` surface (`workspace:41`, `surface:185`) with a fresh nonce `cmx004-live-fixed-65d37c7e034bc6a34331`; prompt submission used the verified `ctrl+enter` TUI action. `cmux ping` returned `PONG`.
+- **Hook observations and path:** project-local additive hooks observed `sessionStart`, `beforeSubmitPrompt`, multiple `afterAgentThought`, and `afterFileEdit`; path-bearing callbacks supplied the canonical Cursor `transcript_path`. The bridge captured that first usable hook-provided source (device `16777230`, inode `64247673`, final size `1368` bytes) without scanning undocumented directories.
+- **Normalized result:** the bridge wrote the authoritative per-job `${CMUX_AGENT_RUNTIME}/jobs/<job_nonce>/cursor.pty-result.ndjson` with three correlated assistant records; user/prompt echo was absent. The nonce-framed marker was preserved in assistant content, immediately as `<!-- CMX_JOB cmx004-live-fixed-65d37c7e034bc6a34331 -->` followed by `<!-- GOAL_COMPLETE -->`.
+- **Artifact and checks:** the disposable checkout contained exactly `cmx004-live-proof.txt` with bytes `CMX004_INTERACTIVE_LIVE_OK\n` (SHA-256 `7a90b2b40c3e64eba656ee092e7371a899556a4d44518ce1579cd846913f570c`); `git diff --check` passed.
+- **Watcher and idle corroboration:** watcher transitions were `UNKNOWN → WORKING → IDLE → WORKING → IDLE → WORKING → IDLE`; the final `IDLE` was emitted after a bounded read of the exact mapped cmux surface with reason `pane-idle`, and workspace/surface/cwd correlation matched the supervisor mapping. No `stop` event was required for the settled gate.
+- **Cleanup and hook preservation:** the disposable surface, checkout, runtime files, hook logs, and Cursor project metadata were removed after evidence capture. The existing user hook file was not modified (byte-for-byte SHA-256 `dac733b9b0e62d175e85858fade1cfb0e667ffe71667aae14cc9efef1da0f437`).
+
 Agy adapter-wiring evidence from the portable templates (this iteration):
 
 - The `agy-hook-notify.sh` lifecycle adapter is exercised against a disposable repo and transcript in `tests/agy-executor-contract.sh`: it reads the camelCase agy `PostInvocation` hook JSON from stdin, appends a bounded transcript tail to a fresh result file, and writes exactly one correlated event line (`hook_event_name: PostInvocation`, `conversation_id`, `transcript_path`, `status: success`) to the configured runtime sink. The test runs only under a temporary home/payload and never touches real hooks, profiles, transcripts, or the result file.
@@ -313,6 +348,7 @@ The repository's static contract and focused profile tests are the repeatable lo
 bash tests/cmux-agent-orchestration-contract.sh
 bash tests/executor-profile-contract.sh
 bash tests/agy-executor-contract.sh
+bash tests/cursor-transcript-bridge-contract.sh
 bash -n tests/*.sh docs/examples/*.sh
 python3 -m json.tool <each changed JSON file>
 git diff --check

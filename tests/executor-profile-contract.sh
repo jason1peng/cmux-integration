@@ -75,17 +75,39 @@ assert cursor["launch"]["permission_mode"] == "explicit-trust"
 assert cursor["launch"]["dangerous"] is False
 assert cursor["launch"]["force"] is False
 assert cursor["launch"]["yolo"] is False
-assert cursor["lifecycle"]["event"] == "stop"
-assert cursor["lifecycle"]["source"] == "cursor-hooks-stop-adapter"
+assert cursor["lifecycle"]["event"] == "cursor-transcript-bridge"
+assert cursor["lifecycle"]["source"] == "cursor-hooks-transcript-bridge"
 assert cursor["lifecycle"]["hook_config"] == "${HOME}/.cursor/hooks.json"
-assert cursor["lifecycle"]["adapter"] == "${HOME}/.cursor/hooks/cursor-stop-notify.sh"
-assert cursor["lifecycle"]["hook_sink"].endswith("cursor-stop.ndjson")
+assert cursor["lifecycle"]["event_sink"].endswith("cursor-transcript-bridge.ndjson")
+assert cursor["transcript"]["kind"] == "hook-provided-cursor-jsonl"
+assert cursor["transcript"]["bridge"]["required"] is True
+assert "first usable" in cursor["transcript"]["bridge"]["path_rule"]
+assert "CMUX_AGENT_JOB_RUNTIME" in cursor["supervisor_mapping"]["exports"]
 assert "conversation_id" in cursor["lifecycle"]["correlation"]
 assert "generation_id" in cursor["lifecycle"]["correlation"]
 assert "transcript_path" in cursor["lifecycle"]["correlation"]
 assert "prompt echo" in cursor["transcript"]["prompt_echo_rule"]
 assert "error" not in cursor["lifecycle"]["acceptable_statuses"]
 assert "aborted" not in cursor["lifecycle"]["acceptable_statuses"]
+assert cursor["lifecycle"]["optional_wakeups"] == ["stop", "afterAgentResponse"]
+assert "stop error" in cursor["lifecycle"]["optional_stop_status_rule"]
+assert cursor["watcher"]["command"] == "${CMUX_AGENT_CONFIG}/bin/cursor-result-watcher.sh"
+assert cursor["watcher"]["advisor_sink"] == "${CMUX_AGENT_RUNTIME}/jobs/${job_nonce}/cursor.advisor.ndjson"
+advisor = cursor["watcher"]["advisor"]
+assert advisor["enabled"] == "optional"
+assert advisor["kind"] == "bounded-local-llm-advisor"
+assert advisor["command"] == "${CMUX_AGENT_CONFIG}/bin/cursor-advisor.sh"
+assert advisor["protocol"] == "strict-json-recommendation"
+assert advisor["quiet_trigger_after_seconds"] == 15
+assert advisor["timeout_seconds"] == 5
+assert advisor["backoff_seconds"] == [15, 30, 60]
+assert advisor["backoff_cap_seconds"] == 60
+assert advisor["policy"] == "routine-command-v1"
+assert advisor["mandatory_escalation_categories"] == [
+    "destructive", "credential", "deployment", "external-network", "ambiguous", "important"
+]
+assert "exact displayed command" in advisor["approval_rule"]
+assert "fail closed" in advisor["failure_rule"]
 
 agy = load("executor-profile.agy.json")
 common(agy, "agy")
@@ -106,6 +128,10 @@ assert agy["lifecycle"]["hook_sink"].endswith("/events/agy-result.ndjson")
 hooks = json.loads((examples / "cursor-hooks.json").read_text())
 assert hooks["hooks"]["stop"][0]["command"] == ".cursor/hooks/cursor-stop-notify.sh"
 assert hooks["hooks"]["stop"][0]["timeout"] == 5
+for event in ("sessionStart", "beforeSubmitPrompt", "afterAgentThought", "afterFileEdit", "afterShellExecution", "afterAgentResponse"):
+    assert hooks["hooks"][event][0]["command"] == ".cursor/hooks/cursor-transcript-bridge.sh"
+    assert hooks["hooks"][event][0]["timeout"] == 5
+assert hooks["hooks"]["stop"][1]["command"] == ".cursor/hooks/cursor-transcript-bridge.sh"
 
 # Exercise the shared evidence boundaries as data-level contract tests. Production
 # supervision remains in the skill/supervisor; these checks prevent templates and
@@ -370,6 +396,8 @@ for setup_contract in \
   'agi-result.txt' \
   'hooks/cursor-stop-notify.sh' \
   '.cursor/hooks/cursor-stop-notify.sh' \
+  'cursor-result-watcher.sh' \
+  'CMUX_AGENT_CONFIG}/bin' \
   'do not use `${CMUX_AGENT_CONFIG}` as a Cursor hook command expansion'; do
   grep -Fq -- "$setup_contract" "$profiles_doc"
 done
