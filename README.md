@@ -117,6 +117,7 @@ The watcher is the deterministic polling component: it compares bounded
 result/event cursors, treats fresh correlated activity as `WORKING`, and emits
 `REQUIRE_ATTENTION` after five quiet seconds with exact-pane evidence. Quiet
 is ambiguous; it is not completion and the LLM/supervisor decides what to do.
+While quiet persists, pane reads are throttled to at most once per second.
 `IDLE` remains only corroboration for the turn-settled gate.
 
 The optional bounded local LLM advisor is a separate machine-local adapter.

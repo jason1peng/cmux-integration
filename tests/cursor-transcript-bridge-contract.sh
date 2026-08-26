@@ -17,6 +17,7 @@ command -v python3 >/dev/null
 grep -Fq 'MAX_APPEND_READ_BYTES' "$watcher"
 grep -Fq 'stream.seek(offset)' "$watcher"
 grep -Fq 'ATTENTION_QUIET_SECONDS = 5.0' "$watcher"
+grep -Fq 'PANE_RECHECK_SECONDS = 1.0' "$watcher"
 grep -Fq 'REQUIRE_ATTENTION' "$watcher"
 grep -Fq 'ADVISOR_QUIET_SECONDS = 15.0' "$watcher"
 grep -Fq 'ADVISOR_BACKOFF_SECONDS = (15.0, 30.0, 60.0)' "$watcher"
@@ -57,8 +58,10 @@ assert "stat identity" in profile["watcher"]["poll_strategy"]
 assert profile["watcher"]["max_append_read_bytes"] == 262144
 assert profile["watcher"]["attention_after_seconds"] == 5
 assert profile["watcher"]["pane_fallback_after_seconds"] == 5
+assert profile["watcher"]["pane_poll_interval_seconds"] == 1
 assert "REQUIRE_ATTENTION" in profile["watcher"]["classifications"]
 assert "quiet is ambiguous" in profile["watcher"]["quiet_rule"]
+assert "once per second" in profile["watcher"]["quiet_rule"]
 assert set(profile["watcher"]["classifications"]) == {"REQUIRE_ATTENTION", "QUESTION", "IDLE", "WORKING", "LOST", "UNKNOWN"}
 advisor = profile["watcher"]["advisor"]
 assert advisor["enabled"] == "optional"
@@ -350,6 +353,27 @@ lines_before=$(wc -l < "$watch_job/cursor.watcher.ndjson")
 env "${watch_env[@]}" CMUX_TEST_PANE_LOG="$pane_log" "$watcher" --once --pane-fallback-seconds 0 --cmux-command "$pane" > "$runtime/watch-idle-repeat.out"
 [[ ! -s "$runtime/watch-idle-repeat.out" ]]
 [[ "$lines_before" -eq "$(wc -l < "$watch_job/cursor.watcher.ndjson")" ]]
+
+# Continuous quiet polling keeps the cheap cursor loop active but throttles
+# cmux reads to one per configured pane interval.  A zero watcher interval is
+# rejected rather than allowing a CPU-burning busy loop.
+python3 - "$watch_job/cursor-watcher.state.json" <<'PY'
+import json, sys
+p=sys.argv[1]
+s=json.load(open(p, encoding="utf-8"))
+s["last_activity_at"] = 0
+s["last_state"] = "REQUIRE_ATTENTION"
+s["pane_read_at"] = None
+json.dump(s, open(p, "w", encoding="utf-8"), separators=(",", ":"))
+open(p, "a", encoding="utf-8").write("\n")
+PY
+: > "$pane_log"
+env "${watch_env[@]}" CMUX_TEST_PANE_LOG="$pane_log" "$watcher" --max-polls 4 --interval-seconds 0.01 --pane-fallback-seconds 0 --pane-poll-seconds 1 --now 100 --cmux-command "$pane" > "$runtime/watch-throttled.out"
+[[ "$(grep -c -- 'read-screen --workspace workspace:99 --surface surface:100' "$pane_log")" -eq 1 ]]
+if env "${watch_env[@]}" "$watcher" --max-polls 1 --interval-seconds 0 --cmux-command "$pane" >/dev/null 2>&1; then
+  echo "watcher accepted a zero polling interval" >&2
+  exit 1
+fi
 
 # QUESTION and unknown/lost states are fail-closed classifications.  The
 # bridge appends one transcript/result/event record; the watcher advances its

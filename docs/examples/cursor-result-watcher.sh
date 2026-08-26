@@ -50,6 +50,7 @@ ADVISOR_POLICY = "routine-command-v1"
 # A quiet source is ambiguous, not a completion signal.  Surface that
 # ambiguity to the LLM/supervisor before the optional advisor retry window.
 ATTENTION_QUIET_SECONDS = 5.0
+PANE_RECHECK_SECONDS = 1.0
 ADVISOR_QUIET_SECONDS = 15.0
 ADVISOR_BACKOFF_SECONDS = (15.0, 30.0, 60.0)
 ADVISOR_MAX_COMMAND_BYTES = 4096
@@ -192,6 +193,7 @@ parser.add_argument("--once", action="store_true")
 parser.add_argument("--max-polls", type=int, default=None)
 parser.add_argument("--interval-seconds", type=float, default=float(os.environ.get("CMUX_AGENT_WATCH_INTERVAL_SECONDS", "0.25")))
 parser.add_argument("--pane-fallback-seconds", type=float, default=float(os.environ.get("CMUX_AGENT_PANE_FALLBACK_SECONDS", str(ATTENTION_QUIET_SECONDS))))
+parser.add_argument("--pane-poll-seconds", type=float, default=float(os.environ.get("CMUX_AGENT_PANE_POLL_SECONDS", str(PANE_RECHECK_SECONDS))))
 parser.add_argument("--cmux-command", default=os.environ.get("CMUX_AGENT_CMUX_COMMAND", "cmux"))
 config_root = os.environ.get("CMUX_AGENT_CONFIG", "").strip()
 default_advisor = os.environ.get("CMUX_AGENT_ADVISOR_COMMAND", "").strip()
@@ -209,8 +211,8 @@ advisor_backoff_default = ",".join(str(int(item)) for item in ADVISOR_BACKOFF_SE
 parser.add_argument("--advisor-backoff-seconds", default=os.environ.get("CMUX_AGENT_ADVISOR_BACKOFF_SECONDS", advisor_backoff_default))
 parser.add_argument("--now", type=float, default=None, help="deterministic clock override for contract fixtures")
 args = parser.parse_args()
-if args.interval_seconds < 0 or args.pane_fallback_seconds < 0 or args.advisor_quiet_seconds < 0:
-    fail("watch intervals and quiet thresholds must be non-negative")
+if args.interval_seconds <= 0 or args.pane_fallback_seconds < 0 or args.pane_poll_seconds < 0 or args.advisor_quiet_seconds < 0:
+    fail("watch interval must be positive; quiet and pane thresholds must be non-negative")
 if args.advisor_timeout_seconds <= 0:
     fail("advisor timeout must be positive")
 try:
@@ -894,6 +896,7 @@ while True:
         # append must be allowed to raise REQUIRE_ATTENTION again later.
         watch_state["attention_activity_key"] = None
         watch_state["pane_state"] = None
+        watch_state["pane_read_at"] = None
     pane_state = "UNKNOWN"
     pane_reason = "pane-not-read"
     pane_text = ""
@@ -906,29 +909,43 @@ while True:
         elif last_activity_at is not None and now - last_activity_at >= args.pane_fallback_seconds:
             # Silence is ambiguous.  Read the exact mapped pane only after
             # the bounded quiet period, then expose REQUIRE_ATTENTION before
-            # any pane interpretation.  The LLM/advisor decides what the
-            # observed quiet state means; IDLE remains corroboration only.
-            pane_state, pane_reason, pane_text = read_pane()
-            quiet_seconds = now - last_activity_at
-            attention_details = dict(details)
-            attention_details.update(
-                {
-                    "pane_state": pane_state,
-                    "pane_reason": pane_reason,
-                    "quiet_seconds": round(max(0.0, quiet_seconds), 3),
-                    "attention_after_seconds": args.pane_fallback_seconds,
-                }
+            # any pane interpretation.  Keep the cheap file poll cadence
+            # independent from pane reads so a quiet job does not spawn a
+            # cmux subprocess every 250 ms forever.
+            pane_read_at = watch_state.get("pane_read_at")
+            pane_due = (
+                args.once
+                or not isinstance(pane_read_at, (int, float))
+                or now >= pane_read_at + args.pane_poll_seconds
             )
-            attention_activity = text(watch_state.get("attention_activity_key"))
-            if attention_activity != activity:
-                watch_state["attention_activity_key"] = activity
-                watch_state["pane_state"] = pane_state
-                emit("REQUIRE_ATTENTION", "quiet-period", attention_details, activity, last_activity_at)
-            elif last_state != pane_state:
-                watch_state["pane_state"] = pane_state
-                emit(pane_state, pane_reason, attention_details, activity, last_activity_at)
+            if not pane_due:
+                persist(last_state, activity, last_activity_at, details)
             else:
-                persist(last_state, activity, last_activity_at, attention_details)
+                # The LLM/advisor decides what the observed quiet state means;
+                # IDLE remains corroboration only.
+                pane_state, pane_reason, pane_text = read_pane()
+                watch_state["pane_read_at"] = now
+                quiet_seconds = now - last_activity_at
+                attention_details = dict(details)
+                attention_details.update(
+                    {
+                        "pane_state": pane_state,
+                        "pane_reason": pane_reason,
+                        "quiet_seconds": round(max(0.0, quiet_seconds), 3),
+                        "attention_after_seconds": args.pane_fallback_seconds,
+                        "pane_poll_seconds": args.pane_poll_seconds,
+                    }
+                )
+                attention_activity = text(watch_state.get("attention_activity_key"))
+                if attention_activity != activity:
+                    watch_state["attention_activity_key"] = activity
+                    watch_state["pane_state"] = pane_state
+                    emit("REQUIRE_ATTENTION", "quiet-period", attention_details, activity, last_activity_at)
+                elif last_state != pane_state:
+                    watch_state["pane_state"] = pane_state
+                    emit(pane_state, pane_reason, attention_details, activity, last_activity_at)
+                else:
+                    persist(last_state, activity, last_activity_at, attention_details)
         elif last_state is None:
             emit("WORKING", "result-present", details, activity, last_activity_at)
         else:
@@ -952,6 +969,7 @@ while True:
     if advisor_due:
         if pane_reason == "pane-not-read":
             pane_state, pane_reason, pane_text = read_pane()
+            watch_state["pane_read_at"] = now
         # Keep the quiet checkpoint visible to the LLM even if a later pane
         # corroboration has classified the surface as IDLE/UNKNOWN.  The
         # attention generation is cleared only by fresh correlated activity.

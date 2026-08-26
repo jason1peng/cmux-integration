@@ -81,6 +81,7 @@
     "max_append_read_bytes": 262144,
     "attention_after_seconds": 5,
     "pane_fallback_after_seconds": 5,
+    "pane_poll_interval_seconds": 1,
     "classifications": [
       "REQUIRE_ATTENTION",
       "QUESTION",
@@ -89,7 +90,7 @@
       "LOST",
       "UNKNOWN"
     ],
-    "quiet_rule": "after five seconds without correlated result/event activity, emit REQUIRE_ATTENTION with bounded pane evidence; quiet is ambiguous and never completion",
+    "quiet_rule": "after five seconds without correlated result/event activity, emit REQUIRE_ATTENTION with bounded pane evidence; quiet is ambiguous and never completion; re-read the pane at most once per second while quiet persists",
     "pane_rule": "read only the exact recorded workspace/surface after five seconds without result activity; pane state is corroboration for the LLM/supervisor and explicit follow-up/idle corroboration is required; no automatic approvals",
     "advisor": {
       "enabled": "optional",
