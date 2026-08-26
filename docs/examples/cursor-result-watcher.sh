@@ -633,6 +633,26 @@ def read_pane() -> tuple[str, str, str]:
     return "UNKNOWN", "pane-unclassified", screen
 
 
+def pane_read_due(now: float) -> bool:
+    pane_read_at = watch_state.get("pane_read_at")
+    return (
+        args.once
+        or not isinstance(pane_read_at, (int, float))
+        or now >= pane_read_at + args.pane_poll_seconds
+    )
+
+
+def read_pane_if_due(now: float) -> tuple[str, str, str] | None:
+    """Read cmux at the shared quiet-pane cadence and cache its state."""
+    if not pane_read_due(now):
+        return None
+    state, reason, screen = read_pane()
+    watch_state["pane_read_at"] = now
+    watch_state["pane_state"] = state
+    watch_state["pane_reason"] = reason
+    return state, reason, screen
+
+
 def mandatory_category(value: str) -> str | None:
     for category, pattern in ADVISOR_MANDATORY_PATTERNS:
         if pattern.search(value):
@@ -896,6 +916,7 @@ while True:
         # append must be allowed to raise REQUIRE_ATTENTION again later.
         watch_state["attention_activity_key"] = None
         watch_state["pane_state"] = None
+        watch_state["pane_reason"] = None
         watch_state["pane_read_at"] = None
     pane_state = "UNKNOWN"
     pane_reason = "pane-not-read"
@@ -912,19 +933,13 @@ while True:
             # any pane interpretation.  Keep the cheap file poll cadence
             # independent from pane reads so a quiet job does not spawn a
             # cmux subprocess every 250 ms forever.
-            pane_read_at = watch_state.get("pane_read_at")
-            pane_due = (
-                args.once
-                or not isinstance(pane_read_at, (int, float))
-                or now >= pane_read_at + args.pane_poll_seconds
-            )
-            if not pane_due:
+            pane_observation = read_pane_if_due(now)
+            if pane_observation is None:
                 persist(last_state, activity, last_activity_at, details)
             else:
                 # The LLM/advisor decides what the observed quiet state means;
                 # IDLE remains corroboration only.
-                pane_state, pane_reason, pane_text = read_pane()
-                watch_state["pane_read_at"] = now
+                pane_state, pane_reason, pane_text = pane_observation
                 quiet_seconds = now - last_activity_at
                 attention_details = dict(details)
                 attention_details.update(
@@ -968,8 +983,13 @@ while True:
     )
     if advisor_due:
         if pane_reason == "pane-not-read":
-            pane_state, pane_reason, pane_text = read_pane()
-            watch_state["pane_read_at"] = now
+            pane_observation = read_pane_if_due(now)
+            if pane_observation is None:
+                pane_state = text(watch_state.get("pane_state")) or "UNKNOWN"
+                pane_reason = text(watch_state.get("pane_reason")) or "pane-throttled"
+                pane_text = ""
+            else:
+                pane_state, pane_reason, pane_text = pane_observation
         # Keep the quiet checkpoint visible to the LLM even if a later pane
         # corroboration has classified the surface as IDLE/UNKNOWN.  The
         # attention generation is cleared only by fresh correlated activity.

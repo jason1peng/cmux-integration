@@ -459,8 +459,10 @@ with open(source, "w", encoding="utf-8") as stream:
     }) + "\n")
 PY
 advisor_pane="$advisor_runtime/fake-cmux.sh"
+advisor_pane_log="$advisor_runtime/advisor-pane.log"
 cat > "$advisor_pane" <<'SH'
 #!/usr/bin/env bash
+printf '%s\n' "$*" >> "${CMUX_TEST_ADVISOR_PANE_LOG:?}"
 printf '%s\n' 'Command: git status --short?'
 SH
 chmod +x "$advisor_pane"
@@ -486,6 +488,7 @@ advisor_env=(
   CMUX_AGENT_CWD="$cwd"
   CMUX_TEST_ADVISOR_RESPONSE="$advisor_response"
   CMUX_TEST_ADVISOR_INPUT="$advisor_input"
+  CMUX_TEST_ADVISOR_PANE_LOG="$advisor_pane_log"
 )
 printf '%s\n' "{\"hook_event_name\":\"afterAgentThought\",\"conversation_id\":\"conversation-advisor\",\"generation_id\":\"generation-advisor\",\"session_id\":\"session-advisor\",\"transcript_path\":\"$advisor_transcript\",\"status\":\"success\"}" | env "${advisor_env[@]}" "$bridge" >/dev/null
 env "${advisor_env[@]}" "$watcher" --once --now 100 --pane-fallback-seconds 0 --advisor-quiet-seconds 15 --advisor-command "$advisor_command" --cmux-command "$advisor_pane" > "$advisor_runtime/advisor-first.out"
@@ -512,6 +515,43 @@ import json, sys
 state = json.load(open(sys.argv[1], encoding="utf-8"))
 assert state["advisor_attempt"] == 3
 assert state["advisor_next_at"] == 220
+PY
+# The advisor path shares the pane-read throttle.  If the quiet branch already
+# read the pane within the configured interval, advisor inspection uses cached
+# bounded state rather than spawning a second cmux read.
+python3 - "$advisor_job/cursor-watcher.state.json" <<'PY'
+import json, os, sys
+from pathlib import Path
+p = Path(sys.argv[1])
+s = json.loads(p.read_text(encoding="utf-8"))
+job = p.parent
+runtime = job.parent.parent
+result = os.stat(job / "cursor.pty-result.ndjson")
+event = os.stat(runtime / "events" / "cursor-transcript-bridge.ndjson")
+activity = (
+    f"{result.st_dev}:{result.st_ino}:{result.st_size}:{result.st_mtime_ns}:{s['result_cursor']}|"
+    f"{event.st_dev}:{event.st_ino}:{event.st_size}:{event.st_mtime_ns}:{s['event_cursor']}"
+)
+s["last_activity_key"] = activity
+s["last_activity_at"] = 0
+s["last_state"] = "REQUIRE_ATTENTION"
+s["attention_activity_key"] = activity
+s["pane_read_at"] = 1000
+s["pane_state"] = "IDLE"
+s["pane_reason"] = "pane-idle"
+s["advisor_attempt"] = 0
+s["advisor_next_at"] = 0
+s["advisor_failure_latched"] = False
+p.write_text(json.dumps(s, separators=(",", ":")) + "\n", encoding="utf-8")
+PY
+: > "$advisor_pane_log"
+env "${advisor_env[@]}" "$watcher" --max-polls 1 --now 10 --pane-fallback-seconds 0 --pane-poll-seconds 60 --advisor-quiet-seconds 5 --advisor-command "$advisor_command" --cmux-command "$advisor_pane" > "$advisor_runtime/advisor-throttled.out"
+[[ ! -s "$advisor_pane_log" ]]
+python3 - "$advisor_input" <<'PY'
+import json, sys
+payload = json.load(open(sys.argv[1], encoding="utf-8"))
+assert payload["attention_required"] is True
+assert payload["pane_state"] == "IDLE"
 PY
 # A fresh transcript/event activity resets both the attempt counter and the
 # next due time, rather than inheriting the capped backoff from the old turn.
