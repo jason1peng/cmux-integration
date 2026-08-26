@@ -104,6 +104,8 @@ for policy in \
   'routine-command-v1' \
   'fifteen seconds of quiet' \
   '15/30/60-second backoff' \
+  'REQUIRE_ATTENTION' \
+  'deterministic watcher' \
   'exact displayed command' \
   'mandatory escalation categories' \
   'advisor failure is fail-closed'; do

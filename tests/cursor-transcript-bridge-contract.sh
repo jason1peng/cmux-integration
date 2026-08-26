@@ -16,6 +16,8 @@ command -v python3 >/dev/null
 # The low-latency watcher must use stat/cursor reads, not whole-file polling.
 grep -Fq 'MAX_APPEND_READ_BYTES' "$watcher"
 grep -Fq 'stream.seek(offset)' "$watcher"
+grep -Fq 'ATTENTION_QUIET_SECONDS = 5.0' "$watcher"
+grep -Fq 'REQUIRE_ATTENTION' "$watcher"
 grep -Fq 'ADVISOR_QUIET_SECONDS = 15.0' "$watcher"
 grep -Fq 'ADVISOR_BACKOFF_SECONDS = (15.0, 30.0, 60.0)' "$watcher"
 grep -Fq 'routine-command-v1' "$watcher"
@@ -53,8 +55,11 @@ assert profile["watcher"]["command"] == "${CMUX_AGENT_CONFIG}/bin/cursor-result-
 assert profile["watcher"]["advisor_sink"] == "${CMUX_AGENT_RUNTIME}/jobs/${job_nonce}/cursor.advisor.ndjson"
 assert "stat identity" in profile["watcher"]["poll_strategy"]
 assert profile["watcher"]["max_append_read_bytes"] == 262144
+assert profile["watcher"]["attention_after_seconds"] == 5
 assert profile["watcher"]["pane_fallback_after_seconds"] == 5
-assert set(profile["watcher"]["classifications"]) == {"QUESTION", "IDLE", "WORKING", "LOST", "UNKNOWN"}
+assert "REQUIRE_ATTENTION" in profile["watcher"]["classifications"]
+assert "quiet is ambiguous" in profile["watcher"]["quiet_rule"]
+assert set(profile["watcher"]["classifications"]) == {"REQUIRE_ATTENTION", "QUESTION", "IDLE", "WORKING", "LOST", "UNKNOWN"}
 advisor = profile["watcher"]["advisor"]
 assert advisor["enabled"] == "optional"
 assert advisor["kind"] == "bounded-local-llm-advisor"
@@ -309,7 +314,9 @@ PY
 env "${watch_env[@]}" CMUX_TEST_PANE_LOG="$pane_log" "$watcher" --once --pane-fallback-seconds 5 --cmux-command "$pane" > "$runtime/watch-repeat.out"
 [[ ! -s "$runtime/watch-repeat.out" ]]
 
-# Force quiet-time fallback with a pane showing working plus follow-up.
+# A quiet source is ambiguous: emit REQUIRE_ATTENTION first, with bounded
+# pane evidence, and let the LLM/advisor interpret it.  Pane state remains a
+# corroboration signal and must not turn quiet into completion by itself.
 cat > "$pane" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$CMUX_TEST_PANE_LOG"
@@ -321,9 +328,14 @@ python3 - "$watch_job/cursor-watcher.state.json" <<'PY'
 import json, sys
 p=sys.argv[1]; s=json.load(open(p)); s["last_activity_at"]=0; s["last_state"]=None; json.dump(s,open(p,"w"),separators=(",",":")); open(p,"a").write("\n")
 PY
+env "${watch_env[@]}" CMUX_TEST_PANE_LOG="$pane_log" "$watcher" --once --pane-fallback-seconds 0 --cmux-command "$pane" > "$runtime/watch-attention.out"
+grep -Fq '"state":"REQUIRE_ATTENTION"' "$runtime/watch-attention.out"
+grep -Fq '"pane_state":"WORKING"' "$runtime/watch-attention.out"
+grep -Fq -- 'read-screen --workspace workspace:99 --surface surface:100' "$pane_log"
+# A second quiet poll reports the pane classification, without re-emitting
+# REQUIRE_ATTENTION on every poll while the activity generation is unchanged.
 env "${watch_env[@]}" CMUX_TEST_PANE_LOG="$pane_log" "$watcher" --once --pane-fallback-seconds 0 --cmux-command "$pane" > "$runtime/watch-working-pane.out"
 grep -Fq '"state":"WORKING"' "$runtime/watch-working-pane.out"
-grep -Fq -- 'read-screen --workspace workspace:99 --surface surface:100' "$pane_log"
 
 # A real follow-up prompt corroborates IDLE, and duplicate IDLE is suppressed.
 cat > "$pane" <<'SH'
@@ -431,8 +443,14 @@ chmod +x "$advisor_pane"
 advisor_response="$advisor_runtime/advisor-response.json"
 printf '%s\n' '{"schema_version":1,"policy":"routine-command-v1","decision":"approve","category":"routine","command":"git status --short","reason":"fixture routine command"}' > "$advisor_response"
 advisor_command="$advisor_runtime/fake-advisor.sh"
+advisor_input="$advisor_runtime/advisor-input.json"
 cat > "$advisor_command" <<'SH'
 #!/usr/bin/env bash
+if [[ -n "${CMUX_TEST_ADVISOR_INPUT:-}" ]]; then
+  cat > "$CMUX_TEST_ADVISOR_INPUT"
+else
+  cat >/dev/null
+fi
 cat "$CMUX_TEST_ADVISOR_RESPONSE"
 SH
 chmod +x "$advisor_command"
@@ -443,12 +461,20 @@ advisor_env=(
   CMUX_AGENT_SURFACE=surface:100
   CMUX_AGENT_CWD="$cwd"
   CMUX_TEST_ADVISOR_RESPONSE="$advisor_response"
+  CMUX_TEST_ADVISOR_INPUT="$advisor_input"
 )
 printf '%s\n' "{\"hook_event_name\":\"afterAgentThought\",\"conversation_id\":\"conversation-advisor\",\"generation_id\":\"generation-advisor\",\"session_id\":\"session-advisor\",\"transcript_path\":\"$advisor_transcript\",\"status\":\"success\"}" | env "${advisor_env[@]}" "$bridge" >/dev/null
 env "${advisor_env[@]}" "$watcher" --once --now 100 --pane-fallback-seconds 0 --advisor-quiet-seconds 15 --advisor-command "$advisor_command" --cmux-command "$advisor_pane" > "$advisor_runtime/advisor-first.out"
 env "${advisor_env[@]}" "$watcher" --once --now 115 --pane-fallback-seconds 0 --advisor-quiet-seconds 15 --advisor-command "$advisor_command" --cmux-command "$advisor_pane" > "$advisor_runtime/advisor-15.out"
 grep -Fq '"type":"advisor"' "$advisor_runtime/advisor-15.out"
 grep -Fq '"decision":"approve"' "$advisor_runtime/advisor-15.out"
+python3 - "$advisor_input" <<'PY'
+import json, sys
+payload = json.load(open(sys.argv[1], encoding="utf-8"))
+assert payload["watcher_state"] == "REQUIRE_ATTENTION"
+assert payload["attention_required"] is True
+assert payload["pane_state"] == "UNKNOWN"
+PY
 python3 - "$advisor_job/cursor-watcher.state.json" <<'PY'
 import json, sys
 state = json.load(open(sys.argv[1], encoding="utf-8"))

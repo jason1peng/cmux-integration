@@ -92,6 +92,9 @@ assert "aborted" not in cursor["lifecycle"]["acceptable_statuses"]
 assert cursor["lifecycle"]["optional_wakeups"] == ["stop", "afterAgentResponse"]
 assert "stop error" in cursor["lifecycle"]["optional_stop_status_rule"]
 assert cursor["watcher"]["command"] == "${CMUX_AGENT_CONFIG}/bin/cursor-result-watcher.sh"
+assert cursor["watcher"]["attention_after_seconds"] == 5
+assert "REQUIRE_ATTENTION" in cursor["watcher"]["classifications"]
+assert "quiet is ambiguous" in cursor["watcher"]["quiet_rule"]
 assert cursor["watcher"]["advisor_sink"] == "${CMUX_AGENT_RUNTIME}/jobs/${job_nonce}/cursor.advisor.ndjson"
 advisor = cursor["watcher"]["advisor"]
 assert advisor["enabled"] == "optional"

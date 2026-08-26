@@ -47,6 +47,9 @@ IDLE_RE = re.compile(
 # channel rather than an approval channel.  The watcher owns this policy and
 # validates/overrides every advisor response before it can be relayed.
 ADVISOR_POLICY = "routine-command-v1"
+# A quiet source is ambiguous, not a completion signal.  Surface that
+# ambiguity to the LLM/supervisor before the optional advisor retry window.
+ATTENTION_QUIET_SECONDS = 5.0
 ADVISOR_QUIET_SECONDS = 15.0
 ADVISOR_BACKOFF_SECONDS = (15.0, 30.0, 60.0)
 ADVISOR_MAX_COMMAND_BYTES = 4096
@@ -188,7 +191,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--once", action="store_true")
 parser.add_argument("--max-polls", type=int, default=None)
 parser.add_argument("--interval-seconds", type=float, default=float(os.environ.get("CMUX_AGENT_WATCH_INTERVAL_SECONDS", "0.25")))
-parser.add_argument("--pane-fallback-seconds", type=float, default=float(os.environ.get("CMUX_AGENT_PANE_FALLBACK_SECONDS", "5")))
+parser.add_argument("--pane-fallback-seconds", type=float, default=float(os.environ.get("CMUX_AGENT_PANE_FALLBACK_SECONDS", str(ATTENTION_QUIET_SECONDS))))
 parser.add_argument("--cmux-command", default=os.environ.get("CMUX_AGENT_CMUX_COMMAND", "cmux"))
 config_root = os.environ.get("CMUX_AGENT_CONFIG", "").strip()
 default_advisor = os.environ.get("CMUX_AGENT_ADVISOR_COMMAND", "").strip()
@@ -207,7 +210,7 @@ parser.add_argument("--advisor-backoff-seconds", default=os.environ.get("CMUX_AG
 parser.add_argument("--now", type=float, default=None, help="deterministic clock override for contract fixtures")
 args = parser.parse_args()
 if args.interval_seconds < 0 or args.pane_fallback_seconds < 0 or args.advisor_quiet_seconds < 0:
-    fail("watch intervals and advisor quiet trigger must be non-negative")
+    fail("watch intervals and quiet thresholds must be non-negative")
 if args.advisor_timeout_seconds <= 0:
     fail("advisor timeout must be positive")
 try:
@@ -735,6 +738,7 @@ def validate_advisor_response(value: Any, command: str | None, screen: str) -> d
 
 
 def invoke_advisor(
+    watcher_state: str | None,
     pane_state: str,
     pane_reason: str,
     pane_text: str,
@@ -749,6 +753,8 @@ def invoke_advisor(
         "workspace": workspace,
         "surface": surface,
         "cwd": str(cwd),
+        "watcher_state": watcher_state,
+        "attention_required": quiet_seconds >= args.pane_fallback_seconds,
         "pane_state": pane_state,
         "pane_reason": pane_reason,
         "displayed_command": command,
@@ -781,6 +787,7 @@ def invoke_advisor(
 
 def emit_advisor(
     recommendation: dict[str, Any],
+    watcher_state: str | None,
     pane_state: str,
     pane_reason: str,
     quiet_seconds: float,
@@ -792,6 +799,8 @@ def emit_advisor(
         "schema_version": 1,
         "job_nonce": nonce,
         "policy": ADVISOR_POLICY,
+        "watcher_state": watcher_state,
+        "attention_required": quiet_seconds >= args.pane_fallback_seconds,
         "pane_state": pane_state,
         "pane_reason": pane_reason,
         "decision": recommendation["decision"],
@@ -881,6 +890,10 @@ while True:
         watch_state["advisor_attempt"] = 0
         watch_state["advisor_next_at"] = None
         watch_state["advisor_failure_latched"] = False
+        # Quiet attention belongs to the current activity generation.  A new
+        # append must be allowed to raise REQUIRE_ATTENTION again later.
+        watch_state["attention_activity_key"] = None
+        watch_state["pane_state"] = None
     pane_state = "UNKNOWN"
     pane_reason = "pane-not-read"
     pane_text = ""
@@ -891,8 +904,31 @@ while True:
         elif changed:
             emit("WORKING", "result-changed", details, activity, last_activity_at)
         elif last_activity_at is not None and now - last_activity_at >= args.pane_fallback_seconds:
+            # Silence is ambiguous.  Read the exact mapped pane only after
+            # the bounded quiet period, then expose REQUIRE_ATTENTION before
+            # any pane interpretation.  The LLM/advisor decides what the
+            # observed quiet state means; IDLE remains corroboration only.
             pane_state, pane_reason, pane_text = read_pane()
-            emit(pane_state, pane_reason, details, activity, last_activity_at)
+            quiet_seconds = now - last_activity_at
+            attention_details = dict(details)
+            attention_details.update(
+                {
+                    "pane_state": pane_state,
+                    "pane_reason": pane_reason,
+                    "quiet_seconds": round(max(0.0, quiet_seconds), 3),
+                    "attention_after_seconds": args.pane_fallback_seconds,
+                }
+            )
+            attention_activity = text(watch_state.get("attention_activity_key"))
+            if attention_activity != activity:
+                watch_state["attention_activity_key"] = activity
+                watch_state["pane_state"] = pane_state
+                emit("REQUIRE_ATTENTION", "quiet-period", attention_details, activity, last_activity_at)
+            elif last_state != pane_state:
+                watch_state["pane_state"] = pane_state
+                emit(pane_state, pane_reason, attention_details, activity, last_activity_at)
+            else:
+                persist(last_state, activity, last_activity_at, attention_details)
         elif last_state is None:
             emit("WORKING", "result-present", details, activity, last_activity_at)
         else:
@@ -916,10 +952,18 @@ while True:
     if advisor_due:
         if pane_reason == "pane-not-read":
             pane_state, pane_reason, pane_text = read_pane()
+        # Keep the quiet checkpoint visible to the LLM even if a later pane
+        # corroboration has classified the surface as IDLE/UNKNOWN.  The
+        # attention generation is cleared only by fresh correlated activity.
+        attention_active = (
+            text(watch_state.get("attention_activity_key")) == activity
+            and quiet_seconds >= args.pane_fallback_seconds
+        )
+        advisor_state = "REQUIRE_ATTENTION" if attention_active else last_state
         attempt = watch_state.get("advisor_attempt", 0)
         if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 0:
             attempt = 0
-        recommendation = invoke_advisor(pane_state, pane_reason, pane_text, details, quiet_seconds)
+        recommendation = invoke_advisor(advisor_state, pane_state, pane_reason, pane_text, details, quiet_seconds)
         delay = advisor_backoff[min(attempt, len(advisor_backoff) - 1)]
         next_at = now + delay
         watch_state["advisor_attempt"] = attempt + 1
@@ -931,6 +975,7 @@ while True:
             watch_state["advisor_failure_latched"] = True
         emit_advisor(
             recommendation,
+            advisor_state,
             pane_state,
             pane_reason,
             quiet_seconds,

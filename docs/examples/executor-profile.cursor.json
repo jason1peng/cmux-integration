@@ -79,15 +79,18 @@
     "poll_interval_ms": 250,
     "poll_strategy": "stat identity plus persisted byte cursors; bounded appended NDJSON reads only",
     "max_append_read_bytes": 262144,
+    "attention_after_seconds": 5,
     "pane_fallback_after_seconds": 5,
     "classifications": [
+      "REQUIRE_ATTENTION",
       "QUESTION",
       "IDLE",
       "WORKING",
       "LOST",
       "UNKNOWN"
     ],
-    "pane_rule": "read only the exact recorded workspace/surface after five seconds without result activity; explicit follow-up/idle corroboration is required; no automatic approvals",
+    "quiet_rule": "after five seconds without correlated result/event activity, emit REQUIRE_ATTENTION with bounded pane evidence; quiet is ambiguous and never completion",
+    "pane_rule": "read only the exact recorded workspace/surface after five seconds without result activity; pane state is corroboration for the LLM/supervisor and explicit follow-up/idle corroboration is required; no automatic approvals",
     "advisor": {
       "enabled": "optional",
       "kind": "bounded-local-llm-advisor",

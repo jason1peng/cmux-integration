@@ -113,8 +113,14 @@ cp "$repo/docs/examples/cursor-result-watcher.sh" \
 chmod +x "$CMUX_AGENT_CONFIG/bin/cursor-result-watcher.sh"
 ```
 
-The optional bounded local LLM advisor is a separate machine-local watcher
-hook. Install only when routine read-only command questions should be classified:
+The watcher is the deterministic polling component: it compares bounded
+result/event cursors, treats fresh correlated activity as `WORKING`, and emits
+`REQUIRE_ATTENTION` after five quiet seconds with exact-pane evidence. Quiet
+is ambiguous; it is not completion and the LLM/supervisor decides what to do.
+`IDLE` remains only corroboration for the turn-settled gate.
+
+The optional bounded local LLM advisor is a separate machine-local adapter.
+Install only when routine read-only command questions should be classified:
 
 ```bash
 cp "$repo/docs/examples/cursor-advisor.sh" \
@@ -123,12 +129,13 @@ chmod +x "$CMUX_AGENT_CONFIG/bin/cursor-advisor.sh"
 ```
 
 It is invoked after 15 seconds of quiet with 15/30/60-second capped backoff;
-new transcript/event activity resets that backoff. Only an exact displayed
-read-only local command is eligible. Destructive, credential, deployment,
-external-network, ambiguous, important, trust/authorization, authentication,
-spending, irreversible, and scope-expanding questions escalate, and advisor
-failure is fail-closed. The advisor returns a recommendation only; the
-supervisor owns and routes any response.
+new transcript/event activity resets that backoff. It receives the current
+watcher state, bounded transcript evidence, and exact-pane evidence. Only an
+exact displayed read-only local command is eligible. Destructive, credential,
+deployment, external-network, ambiguous, important, trust/authorization,
+authentication, spending, irreversible, and scope-expanding questions
+escalate, and advisor failure is fail-closed. The advisor returns a
+recommendation only; the supervisor/LLM owns and routes any response.
 
 For user hooks, copy both adapters to the supported user location and review them:
 
