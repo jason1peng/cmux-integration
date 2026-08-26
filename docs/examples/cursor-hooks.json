@@ -1,9 +1,49 @@
 {
   "version": 1,
   "hooks": {
+    "sessionStart": [
+      {
+        "command": ".cursor/hooks/cursor-transcript-bridge.sh",
+        "timeout": 5
+      }
+    ],
+    "beforeSubmitPrompt": [
+      {
+        "command": ".cursor/hooks/cursor-transcript-bridge.sh",
+        "timeout": 5
+      }
+    ],
+    "afterAgentThought": [
+      {
+        "command": ".cursor/hooks/cursor-transcript-bridge.sh",
+        "timeout": 5
+      }
+    ],
+    "afterFileEdit": [
+      {
+        "command": ".cursor/hooks/cursor-transcript-bridge.sh",
+        "timeout": 5
+      }
+    ],
+    "afterShellExecution": [
+      {
+        "command": ".cursor/hooks/cursor-transcript-bridge.sh",
+        "timeout": 5
+      }
+    ],
+    "afterAgentResponse": [
+      {
+        "command": ".cursor/hooks/cursor-transcript-bridge.sh",
+        "timeout": 5
+      }
+    ],
     "stop": [
       {
         "command": ".cursor/hooks/cursor-stop-notify.sh",
+        "timeout": 5
+      },
+      {
+        "command": ".cursor/hooks/cursor-transcript-bridge.sh",
         "timeout": 5
       }
     ]

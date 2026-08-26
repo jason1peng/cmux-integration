@@ -1,25 +1,35 @@
 #!/usr/bin/env bash
-# Copy this template to the machine-local hook directory and review it before use.
-# It only appends Cursor stop notifications; it does not approve tools or edit files.
+# Additive Cursor stop wakeup adapter.  It never approves work or declares
+# completion; the supervisor owns the turn-settled gate.
 set -euo pipefail
 
-: "${CMUX_AGENT_RUNTIME:?set the machine-local cmux-agent runtime directory}"
-sink="${CMUX_AGENT_RUNTIME}/events/cursor-stop.ndjson"
+# Cursor reserves/overwrites CMUX_AGENT_RUNTIME for its own project state.
+# Use the supervisor-owned per-job runtime when running inside Cursor hooks.
+runtime="${CMUX_AGENT_JOB_RUNTIME:-${CMUX_AGENT_RUNTIME:-}}"
+: "${runtime:?set the supervisor-generated per-job runtime}"
+sink="${runtime}/events/cursor-stop.ndjson"
 mkdir -p -- "$(dirname -- "$sink")"
 payload=$(cat)
-
-# Reject malformed/non-stop input instead of producing an ambiguous lifecycle event.
 compact=$(
   python3 -c '
 import json
 import sys
-payload = json.load(sys.stdin)
-required = ("hook_event_name", "status", "transcript_path", "conversation_id", "generation_id", "session_id")
-if not isinstance(payload, dict) or payload.get("hook_event_name") != "stop":
+value = json.load(sys.stdin)
+if not isinstance(value, dict) or value.get("hook_event_name") != "stop":
     raise SystemExit("expected Cursor stop hook event")
-if any(not isinstance(payload.get(field), str) or not payload[field] for field in required):
-    raise SystemExit("malformed Cursor stop hook event")
-print(json.dumps(payload, separators=(",", ":")))
+status = value.get("status")
+if not isinstance(status, str) or not status:
+    raise SystemExit("malformed Cursor stop status")
+identity = (value.get("conversation_id") or value.get("conversationId") or
+            value.get("session_id") or value.get("sessionId"))
+if not isinstance(identity, str) or not identity:
+    raise SystemExit("malformed Cursor stop identity")
+for key in ("transcript_path", "transcriptPath"):
+    if key in value and value[key] is not None and not isinstance(value[key], str):
+        raise SystemExit("malformed Cursor stop transcript path")
+print(json.dumps(value, separators=(",", ":")))
 ' <<<"$payload"
 )
 printf '%s\n' "$compact" >>"$sink"
+# Cursor command hooks require a valid JSON response.  This is a wakeup only.
+printf '%s\n' '{}'
