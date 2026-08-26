@@ -64,6 +64,12 @@ Choose one of these scopes:
 | cmux pane skills | **Not supplied by this repository** | Existing global `cmux` and `cmux-workspace` skills | Yes |
 | Profile/runtime directories | — | `~/.config/cmux-agent/` and `~/.local/state/cmux-agent/` | Yes |
 
+The required external pane skills are maintained in [`manaflow-ai/cmux`](https://github.com/manaflow-ai/cmux): [`cmux`](https://github.com/manaflow-ai/cmux/tree/main/skills/cmux) and [`cmux-workspace`](https://github.com/manaflow-ai/cmux/tree/main/skills/cmux-workspace). Install them globally with the Skills CLI:
+
+```bash
+npx skills add manaflow-ai/cmux --skill cmux --skill cmux-workspace --global
+```
+
 When copying the project agent to the global agent directory, change its relative `skillPath` from `../../skills` to `../skills` (or rely on normal global skill discovery after installing the skill above). Do not copy a personal profile, credential, transcript, socket, or runtime state into Git.
 
 ### Cursor files
