@@ -46,11 +46,81 @@ Screen output alone, an exit code alone, or a hook event alone never proves comp
 - It does not provide the agy wrapper or agy-specific hook files.
 - Cursor batch (`--print --output-format stream-json`) and ACP remain deferred; interactive Cursor is the supported Cursor transport in this slice.
 
+## Installation map
+
+This repository is **not a Pi extension or an npm package**. It is a small Pi integration made of a project/user subagent, a custom skill, and machine-local executor templates. There is no `pi install` command for this repository.
+
+Choose one of these scopes:
+
+- **Global (recommended):** install the Pi resources under `~/.pi/agent/` and the executor templates under their `~/.config`, `~/.cursor`, or agy locations. The supervisor is then available from any project.
+- **Project-local:** run Pi with this repository as the project context. The project agent and its skill are available only for this repository, while executor profiles and hooks are still machine-local.
+
+### Core files (required for every executor)
+
+| Purpose | Repository source | Global destination | Required? |
+| --- | --- | --- | --- |
+| Pi supervisor agent and aliases (`cmux-agent`, `agy`, `cmux-agent-supervisor`) | `.pi/agents/cmux-agent.md` | `~/.pi/agent/agents/cmux-agent.md` | Yes |
+| CMX orchestration skill | `skills/cmux-agent-orchestration/SKILL.md` | `~/.pi/agent/skills/cmux-agent-orchestration/SKILL.md` | Yes |
+| cmux pane skills | **Not supplied by this repository** | Existing global `cmux` and `cmux-workspace` skills | Yes |
+| Profile/runtime directories | — | `~/.config/cmux-agent/` and `~/.local/state/cmux-agent/` | Yes |
+
+When copying the project agent to the global agent directory, change its relative `skillPath` from `../../skills` to `../skills` (or rely on normal global skill discovery after installing the skill above). Do not copy a personal profile, credential, transcript, socket, or runtime state into Git.
+
+### Cursor files
+
+| Purpose | Repository source | Global destination | Required? |
+| --- | --- | --- | --- |
+| Cursor executor profile | `docs/examples/executor-profile.cursor.json` | `~/.config/cmux-agent/profiles/cursor.json` | Yes |
+| Deterministic result watcher | `docs/examples/cursor-result-watcher.sh` | `~/.config/cmux-agent/bin/cursor-result-watcher.sh` | Yes |
+| Transcript bridge hook | `docs/examples/cursor-transcript-bridge.sh` | `~/.cursor/hooks/cursor-transcript-bridge.sh` | Yes |
+| Stop notification hook | `docs/examples/cursor-stop-notify.sh` | `~/.cursor/hooks/cursor-stop-notify.sh` | Optional wakeup |
+| Cursor hook registration | `docs/examples/cursor-hooks.json` | Merge into `~/.cursor/hooks.json` | Yes for bridge |
+| Bounded advisor | `docs/examples/cursor-advisor.sh` | `~/.config/cmux-agent/bin/cursor-advisor.sh` | Optional |
+
+The hook registration must be merged additively; preserve existing monitoring hooks and unrelated entries. The supervisor never installs or overwrites user hooks silently.
+
+### agy files
+
+| Purpose | Repository source | Global destination | Required? |
+| --- | --- | --- | --- |
+| agy executor profile | `docs/examples/executor-profile.agy.json` | `~/.config/cmux-agent/profiles/agy.json` | Yes for agy |
+| agy wrapper | `docs/examples/agy-with-permissions.sh` | `~/bin/agy-with-permissions` | Yes for agy |
+| agy lifecycle adapter | `docs/examples/agy-hook-notify.sh` | `~/bin/agy-hook-notify.sh` | Yes for agy |
+| agy lifecycle registration | `docs/examples/agy-result-hook.hooks.json` | Merge into the global agy hooks config | Yes for agy |
+| agy result source | — | `~/agi-result.txt` | Yes for agy |
+
+The agy CLI, credentials, and product configuration are external prerequisites. `agy-install.sh` performs the wrapper/adapter installation and hook merge with explicit confirmation.
+
+### Global Pi resource installation
+
+Run this once from a checkout of this repository. Inspect existing targets before replacing them; preserve local changes:
+
+```bash
+repo=/path/to/cmux-integration
+mkdir -p "$HOME/.pi/agent/agents" \
+         "$HOME/.pi/agent/skills/cmux-agent-orchestration"
+cp "$repo/skills/cmux-agent-orchestration/SKILL.md" \
+   "$HOME/.pi/agent/skills/cmux-agent-orchestration/SKILL.md"
+sed 's|^skillPath: \.\./\.\./skills$|skillPath: ../skills|' \
+  "$repo/.pi/agents/cmux-agent.md" > "$HOME/.pi/agent/agents/cmux-agent.md"
+```
+
+Then follow [Configure Cursor](#configure-cursor) and/or [Configure agy](#configure-agy) below. Set `CMUX_AGENT_CONFIG`, `CMUX_AGENT_PROFILE_DIR`, `CMUX_AGENT_RUNTIME`, and (unless selecting per job) `CMUX_AGENT_EXECUTOR` in the environment that starts Pi. Restart Pi after installing global agent/skill files.
+
+### AI-assisted installation request
+
+This is a safe, repeatable prompt for updating another machine or refreshing a merged checkout:
+
+```text
+Read <repo>/README.md, especially "Installation map", "Global Pi resource installation", "Configure Cursor", and "Configure agy". Install or update this cmux integration globally, not in the current project. First inspect every existing target and show the planned changes. Preserve unrelated Pi agents, Cursor hooks, agy hooks, credentials, profiles, and runtime state; merge hook entries additively; ask before changing user configuration. Install only the selected executor's required files, then run the documented verification commands and report missing prerequisites or skipped checks. Do not commit machine-local files.
+```
+
 ## Prerequisites
 
 ### Required for every profile
 
-- Pi running with this repository as the project context, so the project agent and skill are available.
+- Pi with either this repository as the project context or the global Pi resources installed above.
+- The separately installed `cmux` and `cmux-workspace` skills, available to the supervisor.
 - `cmux` installed and usable (`cmux ping` should return `PONG`).
 - A disposable or approved working directory for the executor job.
 - A writable machine-local runtime directory.
