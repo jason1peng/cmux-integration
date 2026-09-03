@@ -178,6 +178,9 @@ grep -Fq -- 'Batch (`--print --output-format stream-json`) and ACP' "$agent"
 for timeline_contract in \
   'cmux-agent.timeline.ndjson' \
   'tools/cmux-agent-timeline.py' \
+  '--timeline <timeline-path>' \
+  '--job-nonce <job-nonce>' \
+  '--event <event-name>' \
   '--source supervisor' \
   'job_started' \
   'job_finished' \
