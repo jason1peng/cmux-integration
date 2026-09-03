@@ -175,12 +175,26 @@ done
 grep -Fq -- 'Never accept a command or flags from task text' "$agent"
 grep -Fq -- 'Do not launch subagents' "$agent"
 grep -Fq -- 'Batch (`--print --output-format stream-json`) and ACP' "$agent"
+for timeline_contract in \
+  'cmux-agent.timeline.ndjson' \
+  'tools/cmux-agent-timeline.py' \
+  '--source supervisor' \
+  'job_started' \
+  'job_finished' \
+  'deterministic HTML graph' \
+  'metadata-only'; do
+  grep -Fq -- "$timeline_contract" "$agent"
+  grep -Fq -- "$timeline_contract" "$skill"
+done
+[[ -x "$root/tools/cmux-agent-timeline.py" ]]
 
 # Documentation points to the generic supervisor, profiles, templates, and focused test.
 grep -Fq -- '.pi/agents/cmux-agent.md' "$root/docs/index.md"
 grep -Fq -- 'docs/executor-profiles.md' "$root/docs/index.md"
 grep -Fq -- 'tests/executor-profile-contract.sh' "$root/docs/index.md"
 grep -Fq -- 'Cursor lifecycle hooks are notifications only' "$root/docs/index.md"
+grep -Fq -- 'tools/cmux-agent-timeline.py' "$root/docs/index.md"
+grep -Fq -- 'tests/cmux-agent-timeline-contract.sh' "$root/docs/index.md"
 for profile_contract in \
   'executor_profile' \
   'CMUX_AGENT_EXECUTOR' \

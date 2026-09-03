@@ -19,6 +19,12 @@ grep -Fq 'stream.seek(offset)' "$watcher"
 grep -Fq 'ATTENTION_QUIET_SECONDS = 5.0' "$watcher"
 grep -Fq 'PANE_RECHECK_SECONDS = 1.0' "$watcher"
 grep -Fq 'REQUIRE_ATTENTION' "$watcher"
+grep -Fq 'cmux-agent.timeline.ndjson' "$watcher"
+grep -Fq 'append_timeline' "$watcher"
+grep -Fq 'state_changed' "$watcher"
+grep -Fq 'observation_changed' "$watcher"
+grep -Fq 'watcher_started_at' "$watcher"
+grep -Fq 'observed_at' "$bridge"
 grep -Fq 'ADVISOR_QUIET_SECONDS = 15.0' "$watcher"
 grep -Fq 'ADVISOR_BACKOFF_SECONDS = (15.0, 30.0, 60.0)' "$watcher"
 grep -Fq 'routine-command-v1' "$watcher"
@@ -304,6 +310,23 @@ rm -f "$watch_job/cursor-watcher.state.json" "$watch_job/cursor.watcher.ndjson" 
 env "${watch_env[@]}" CMUX_TEST_PANE_LOG="$pane_log" "$watcher" --once --pane-fallback-seconds 5 --cmux-command "$pane" > "$runtime/watch-first.out"
 grep -Fq '"state":"WORKING"' "$runtime/watch-first.out"
 [[ ! -e "$pane_log" ]]
+timeline_path="$watch_job/cmux-agent.timeline.ndjson"
+[[ -s "$timeline_path" ]]
+grep -Fq '"event":"hook_observed"' "$timeline_path"
+grep -Fq '"event":"watcher_started"' "$timeline_path"
+grep -Fq '"event":"state_changed"' "$timeline_path"
+[[ "$(grep -c '"event":"watcher_started"' "$timeline_path")" -eq 1 ]]
+if grep -Fq 'latest_content' "$timeline_path"; then
+  echo 'timeline leaked transcript content field' >&2
+  exit 1
+fi
+python3 - "$timeline_path" <<'PY'
+import json, sys
+records = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+assert all(record["job_nonce"] == "cursor-watcher-001" for record in records)
+assert all(record["source"] in {"bridge", "watcher"} for record in records)
+assert all(isinstance(record["at_ms"], int) for record in records)
+PY
 python3 - "$watch_job/cursor-watcher.state.json" <<'PY'
 import json, sys
 state = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -316,6 +339,7 @@ assert state["event_cursor"] > 0
 PY
 env "${watch_env[@]}" CMUX_TEST_PANE_LOG="$pane_log" "$watcher" --once --pane-fallback-seconds 5 --cmux-command "$pane" > "$runtime/watch-repeat.out"
 [[ ! -s "$runtime/watch-repeat.out" ]]
+[[ "$(grep -c '"event":"watcher_started"' "$timeline_path")" -eq 1 ]]
 
 # A quiet source is ambiguous: emit REQUIRE_ATTENTION first, with bounded
 # pane evidence, and let the LLM/advisor interpret it.  Pane state remains a
@@ -392,6 +416,7 @@ printf '%s\n' '{"id":"watch-question","role":"assistant","type":"assistant_messa
 printf '%s\n' "{\"hook_event_name\":\"afterAgentThought\",\"conversation_id\":\"conversation-watch\",\"generation_id\":\"generation-watch\",\"session_id\":\"session-watch\",\"transcript_path\":\"$watch_transcript\",\"status\":\"success\"}" | env "${watch_env[@]}" "$bridge" >/dev/null
 env "${watch_env[@]}" CMUX_TEST_PANE_LOG="$pane_log" "$watcher" --once --pane-fallback-seconds 5 --cmux-command "$pane" > "$runtime/watch-question.out"
 grep -Fq '"state":"QUESTION"' "$runtime/watch-question.out"
+grep -Fq '"question_source":"transcript"' "$watch_job/cmux-agent.timeline.ndjson"
 python3 - "$watch_job/cursor-watcher.state.json" "$watch_result_cursor_before" "$watch_event_cursor_before" <<'PY'
 import json, sys
 state = json.load(open(sys.argv[1], encoding="utf-8"))
