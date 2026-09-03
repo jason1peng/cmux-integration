@@ -126,6 +126,20 @@ Each poll must have a finite interval and the overall job must have a finite dea
 
 When approval or clarification arrives, send only the main agent's decision to the executor, record the response, and resume with a fresh bounded deadline. The approval response starts a new executor turn; do not treat the marker turn as permission to continue. A rejection ends the job as an escalated result. Do not expose executor internals to the main agent beyond the relevant marker, transcript excerpt, artifacts, and outcome.
 
+## Timeline telemetry
+
+Every job maintains an append-only metadata-only timeline at `${CMUX_AGENT_RUNTIME}/jobs/${job_nonce}/cmux-agent.timeline.ndjson`. The checked-in `tools/cmux-agent-timeline.py` owns the event format and Markdown/JSON/HTML views. Record every supervisor milestone with `python3 <project-root>/tools/cmux-agent-timeline.py record --timeline <timeline-path> --job-nonce <job-nonce> --workspace <recorded-workspace> --surface <executor-surface> --cwd <contract-cwd> --event <event-name> --source supervisor`: `job_started`, `workspace_resolved`, `surface_created`, `executor_launched`, `executor_ready`, `prompt_submitted`, `completion_gate_passed`, `surface_close_requested`, `surface_closed` or `surface_close_failed`, and `job_finished`. For questions, record `question_acknowledged`, `question_relayed`, `decision_received`, and `response_sent` in order. The bridge records correlated `hook_observed` events; the watcher records `watcher_started`, `state_changed`, and `observation_changed` events. Timeline writes are diagnostic only: do not persist prompts, question text, transcript content, credentials, or command output, and a telemetry write failure must not alter approval or completion decisions.
+
+The supervisor renders the deterministic HTML graph report after the final `job_finished` event for every terminal outcome:
+
+```bash
+python3 <project-root>/tools/cmux-agent-timeline.py view \
+  --timeline "$CMUX_AGENT_RUNTIME/jobs/<job_nonce>/cmux-agent.timeline.ndjson" \
+  --format html > "$CMUX_AGENT_RUNTIME/jobs/<job_nonce>/cmux-agent.timeline.html"
+```
+
+The HTML view is responsive, keeps event tooltips within the graph boundary, shows one watcher-detected state band, and reports hook/observation milestones, prompt-to-first-normalized-record latency, state dwell, and question latency. `supervisor_observed` remains a provenance/timing event, not a second inferred state. The same timeline input must produce byte-identical HTML; Markdown and JSON remain available. A pane question timestamp represents bounded observation time, not when the executor first rendered it. Timeline output never replaces fresh transcript/result evidence, lifecycle correlation, artifact/check, or idle corroboration.
+
 ## Result contract
 
 Return a concise result containing:

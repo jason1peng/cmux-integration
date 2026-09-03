@@ -72,6 +72,20 @@ Both profiles require a lifecycle notification/result source. A hook event only 
 
 A missing executable, hook, event sink, transcript source, or required registration is a pre-launch failure. Do not create dummy files or silently fall back to screen polling.
 
+### Per-job timeline
+
+Every job also writes metadata-only events to `$CMUX_AGENT_RUNTIME/jobs/<job_nonce>/cmux-agent.timeline.ndjson`. The bridge records correlated hook observations, the watcher records state transitions and observation-reason changes, and the supervisor records lifecycle, question, completion-gate, and surface-cleanup milestones with explicit supervisor provenance. Timeline records never contain prompts, transcript text, credentials, or command output.
+
+After the final `job_finished` event, the supervisor renders a deterministic report for successful, failed, timed-out, and escalated jobs:
+
+```bash
+python3 tools/cmux-agent-timeline.py view \
+  --timeline "$CMUX_AGENT_RUNTIME/jobs/<job_nonce>/cmux-agent.timeline.ndjson" \
+  --format html > "$CMUX_AGENT_RUNTIME/jobs/<job_nonce>/cmux-agent.timeline.html"
+```
+
+The HTML graph is responsive, keeps event tooltips within its bounds, shows the watcher-detected state band, and reports observation milestones, prompt-to-first-normalized-record latency, state dwell, and question latency. Markdown and JSON views are also available, and the same timeline input produces byte-identical HTML. Timeline output is diagnostic only and never replaces fresh transcript/result, lifecycle, artifact/check, or idle evidence.
+
 ### 3. Cursor setup
 
 The Cursor profile invokes a machine-local watcher at `${CMUX_AGENT_CONFIG}/bin/cursor-result-watcher.sh`. Install the reviewed disposable template explicitly before selecting the profile; the supervisor never creates or repairs this executable:

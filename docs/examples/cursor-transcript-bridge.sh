@@ -8,10 +8,11 @@
 set -euo pipefail
 
 # Cursor reserves/overwrites CMUX_AGENT_RUNTIME for its own project state.
-# Keep the per-job runtime on the supervisor-owned non-colliding variable and
-# retain CMUX_AGENT_RUNTIME only as a direct-test/backward-compatible fallback.
+# Keep the supervisor runtime root (containing jobs/<job_nonce>) on the
+# non-colliding variable and retain CMUX_AGENT_RUNTIME only as a
+# direct-test/backward-compatible fallback.
 runtime_env="${CMUX_AGENT_JOB_RUNTIME:-${CMUX_AGENT_RUNTIME:-}}"
-: "${runtime_env:?set the supervisor-generated per-job runtime}"
+: "${runtime_env:?set the supervisor-generated runtime root}"
 export CMUX_AGENT_JOB_RUNTIME="$runtime_env"
 : "${CMUX_AGENT_JOB_NONCE:?set the supervisor-generated job nonce}"
 : "${CMUX_AGENT_WORKSPACE:?set the supervisor-recorded cmux workspace}"
@@ -25,6 +26,7 @@ cat >"$payload_file"
 python3 - "$payload_file" <<'PY'
 from __future__ import annotations
 
+import datetime as dt
 import fcntl
 import hashlib
 import json
@@ -33,6 +35,8 @@ import pathlib
 import re
 import sys
 import tempfile
+import time
+import uuid
 from typing import Any
 
 payload_path = pathlib.Path(sys.argv[1])
@@ -47,6 +51,7 @@ ALLOWED_EVENTS = {
     "stop",
 }
 NONCE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+MAX_TIMELINE_VALUE_LENGTH = 512
 HANDLE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 GENERATION_SUFFIX_RE = re.compile(r"^(?P<base>.+)-[0-9]+-[A-Za-z0-9]+$")
 
@@ -96,6 +101,8 @@ legacy_mapping = job_dir / "mapping.json"
 state_path = job_dir / "cursor-bridge.state.json"
 result_path = job_dir / "cursor.pty-result.ndjson"
 event_path = runtime / "events" / "cursor-transcript-bridge.ndjson"
+timeline_path = job_dir / "cmux-agent.timeline.ndjson"
+timeline_lock_path = job_dir / ".cmux-agent.timeline.lock"
 lock_path = job_dir / ".cursor-transcript-bridge.lock"
 if not mapping_path.is_file() or legacy_mapping.exists():
     fail("active supervisor mapping is missing or ambiguous")
@@ -340,7 +347,76 @@ def event_identity(path: str | None, size: int | None) -> str:
     return hashlib.sha256(json.dumps(data, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def timeline_field(value: Any) -> Any:
+    if isinstance(value, str):
+        if 0 < len(value) <= MAX_TIMELINE_VALUE_LENGTH and "\n" not in value and "\r" not in value:
+            return value
+        return None
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return None
+
+
+def append_timeline(
+    event_name: str,
+    event_at: float | None = None,
+    event_monotonic_ns: int | None = None,
+    **fields: Any,
+) -> None:
+    # This adapter is copied to a machine-local hook path and must remain
+    # self-contained; the checked-in CLI is the matching record/view tool,
+    # not a runtime dependency of the hook bridge. Timeline data is diagnostic
+    # only; do not turn a telemetry write failure into a false Cursor hook
+    # failure or alter the completion gate.
+    observed_at = event_at if isinstance(event_at, (int, float)) and not isinstance(event_at, bool) else time.time()
+    observed_monotonic_ns = (
+        event_monotonic_ns
+        if isinstance(event_monotonic_ns, int) and not isinstance(event_monotonic_ns, bool) and event_monotonic_ns >= 0
+        else time.monotonic_ns()
+    )
+    try:
+        timeline_at = dt.datetime.fromtimestamp(observed_at, dt.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        timeline_at_ms = int(observed_at * 1000)
+    except (OverflowError, ValueError):
+        return
+    value: dict[str, Any] = {
+        "schema_version": 1,
+        "event_id": f"bridge:{observed_monotonic_ns}:{uuid.uuid4().hex[:12]}",
+        "job_nonce": nonce,
+        "source": "bridge",
+        "event": event_name,
+        "at": timeline_at,
+        "at_ms": timeline_at_ms,
+        "monotonic_ns": observed_monotonic_ns,
+        "workspace": workspace,
+        "surface": surface,
+        "cwd": str(cwd),
+    }
+    for key in (
+        "hook_event_name",
+        "status",
+        "path_captured",
+        "normalized_records",
+        "failure_latched",
+    ):
+        field = timeline_field(fields.get(key))
+        if field is not None:
+            value[key] = field
+    line = json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+    try:
+        timeline_path.parent.mkdir(parents=True, exist_ok=True)
+        with timeline_lock_path.open("a+", encoding="utf-8") as lock_stream:
+            fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX)
+            with timeline_path.open("a", encoding="utf-8") as stream:
+                stream.write(line + "\n")
+                stream.flush()
+    except OSError as exc:
+        print(f"cursor transcript bridge: timeline append unavailable: {exc}", file=sys.stderr)
+
+
 def append_event(path: str | None, size: int | None, records: int, captured: bool) -> None:
+    observed_at = time.time()
+    observed_monotonic_ns = time.monotonic_ns()
     value = {
         "schema_version": 1,
         "hook_event_name": hook_name,
@@ -356,6 +432,8 @@ def append_event(path: str | None, size: int | None, records: int, captured: boo
         "transcript_size": size,
         "normalized_records": records,
         "path_captured": captured,
+        "observed_at": observed_at,
+        "observed_monotonic_ns": observed_monotonic_ns,
         # These are copied from supervisor mapping, never sourced from the hook.
         "job_nonce": nonce,
         "workspace": workspace,
@@ -364,6 +442,16 @@ def append_event(path: str | None, size: int | None, records: int, captured: boo
     }
     with event_path.open("a", encoding="utf-8") as stream:
         stream.write(json.dumps(value, separators=(",", ":")) + "\n")
+    append_timeline(
+        "hook_observed",
+        event_at=observed_at,
+        event_monotonic_ns=observed_monotonic_ns,
+        hook_event_name=hook_name,
+        status=status,
+        path_captured=captured,
+        normalized_records=records,
+        failure_latched=state.get("failure_latched") is True,
+    )
 
 
 def write_state(value: dict[str, Any]) -> None:

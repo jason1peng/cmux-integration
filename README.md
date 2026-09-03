@@ -38,6 +38,18 @@ A hook event is only a wake-up signal and identity/path observation. The supervi
 
 Screen output alone, an exit code alone, or a hook event alone never proves completion.
 
+## Timeline view
+
+Each job records a metadata-only timeline at `$CMUX_AGENT_RUNTIME/jobs/<job_nonce>/cmux-agent.timeline.ndjson`. It includes hook observations, watcher state changes, supervisor acknowledgements/relays, question decisions, completion-gate timing, and surface/tab cleanup without storing prompts, transcript text, credentials, or command output. Render the deterministic HTML graph after a job:
+
+```bash
+python3 tools/cmux-agent-timeline.py view \
+  --timeline "$CMUX_AGENT_RUNTIME/jobs/<job_nonce>/cmux-agent.timeline.ndjson" \
+  --format html > "$CMUX_AGENT_RUNTIME/jobs/<job_nonce>/cmux-agent.timeline.html"
+```
+
+The supervisor renders this report after `job_finished` for successful, failed, timed-out, and escalated jobs. The responsive SVG graph has bounded hover/focus tooltips, a watcher-detected state band, hook/observation milestones, prompt-to-first-normalized-record latency, state dwell, and question-latency metrics. `supervisor_observed` events remain visible for provenance. The same timeline input produces byte-identical HTML; Markdown and JSON views are also available. A pane question is timestamped when the bounded screen poll observes it, not when the executor first rendered it. Timeline data is diagnostic only and never replaces the completion gate.
+
 ## What this repository does not do
 
 - It does not auto-detect whether Cursor or agy is installed.

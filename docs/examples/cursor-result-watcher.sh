@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # Portable low-latency Cursor result/activity watcher.
 #
-# Hook/result activity is polled cheaply and emits only state changes.  The
-# explicitly mapped cmux surface is read only after the bounded five-second
+# Hook/result activity is polled cheaply and emits state changes.  When the
+# fail-closed classification stays the same but its source reason changes, the
+# timeline receives an observation_changed diagnostic event; the watcher
+# result stream remains transition-only.
+#
+# The explicitly mapped cmux surface is read only after the bounded five-second
 # quiet period.  Screen text corroborates readiness/idle/question state; it is
 # never authoritative result content and no approval is sent here.
 set -euo pipefail
@@ -17,6 +21,8 @@ exec python3 - "$@" <<'PY'
 from __future__ import annotations
 
 import argparse
+import datetime as dt
+import fcntl
 import hashlib
 import json
 import os
@@ -26,6 +32,7 @@ import shlex
 import subprocess
 import sys
 import time
+import uuid
 from typing import Any
 
 NONCE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -51,6 +58,7 @@ ADVISOR_POLICY = "routine-command-v1"
 # ambiguity to the LLM/supervisor before the optional advisor retry window.
 ATTENTION_QUIET_SECONDS = 5.0
 PANE_RECHECK_SECONDS = 1.0
+MAX_TIMELINE_VALUE_LENGTH = 512
 ADVISOR_QUIET_SECONDS = 15.0
 ADVISOR_BACKOFF_SECONDS = (15.0, 30.0, 60.0)
 ADVISOR_MAX_COMMAND_BYTES = 4096
@@ -128,6 +136,8 @@ state_path = job_dir / "cursor-bridge.state.json"
 watcher_state_path = job_dir / "cursor-watcher.state.json"
 result_path = job_dir / "cursor.pty-result.ndjson"
 watcher_sink = job_dir / "cursor.watcher.ndjson"
+timeline_path = job_dir / "cmux-agent.timeline.ndjson"
+timeline_lock_path = job_dir / ".cmux-agent.timeline.lock"
 advisor_sink = job_dir / "cursor.advisor.ndjson"
 event_path = runtime / "events" / "cursor-transcript-bridge.ndjson"
 if not mapping_path.is_file() or legacy_mapping.exists():
@@ -488,8 +498,8 @@ def source_snapshot() -> tuple[str, dict[str, Any]]:
                 prior_source_end = source_end
                 latest_content = cached_content(content)
                 records_read += 1
-        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
-            return "malformed", {"reason": str(exc) if str(exc) else "result-jsonl-malformed"}
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            return "malformed", {"reason": "result-jsonl-malformed"}
         # Keep the cursor at the last complete line.  A partial final line is
         # deliberately retried; bridge writes are therefore never lost.
         watch_state["result_cursor"] = new_cursor
@@ -555,8 +565,8 @@ def source_snapshot() -> tuple[str, dict[str, Any]]:
                     return "event-failed", {"reason": "bridge-event-failed"}
                 if text(event.get("transcript_path")):
                     latest_event = event
-        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
-            return "event-malformed", {"reason": str(exc) if str(exc) else "bridge-event-malformed"}
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            return "event-malformed", {"reason": "bridge-event-malformed"}
         watch_state["event_cursor"] = new_event_cursor
         watch_state["event_pending"] = event_pending
         watch_state["latest_event"] = latest_event
@@ -845,6 +855,73 @@ def emit_advisor(
     print(json.dumps({"type": "advisor", **event}, separators=(",", ":")), flush=True)
 
 
+def timeline_field(value: Any) -> Any:
+    if isinstance(value, str):
+        if 0 < len(value) <= MAX_TIMELINE_VALUE_LENGTH and "\n" not in value and "\r" not in value:
+            return value
+        return None
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return None
+
+
+def append_timeline(event_name: str, event: dict[str, Any]) -> None:
+    # This adapter is copied to a machine-local path and must remain
+    # self-contained; the checked-in CLI is the matching record/view tool,
+    # not a runtime dependency of the hook watcher. Timeline is diagnostic
+    # metadata only. A telemetry failure must not change the fail-closed
+    # result/approval behavior of the watcher.
+    at = event.get("at")
+    if not isinstance(at, (int, float)) or isinstance(at, bool):
+        return
+    try:
+        timeline_at = dt.datetime.fromtimestamp(at, dt.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        timeline_at_ms = int(at * 1000)
+    except (OverflowError, ValueError):
+        return
+    value: dict[str, Any] = {
+        "schema_version": 1,
+        "event_id": f"watcher:{time.monotonic_ns()}:{uuid.uuid4().hex[:12]}",
+        "job_nonce": nonce,
+        "source": "watcher",
+        "event": event_name,
+        "at": timeline_at,
+        "at_ms": timeline_at_ms,
+        "monotonic_ns": time.monotonic_ns(),
+        "workspace": workspace,
+        "surface": surface,
+        "cwd": str(cwd),
+    }
+    for key in (
+        "state",
+        "reason",
+        "previous_reason",
+        "pane_state",
+        "pane_reason",
+        "quiet_seconds",
+        "attention_after_seconds",
+        "pane_poll_seconds",
+        "activity_at",
+        "activity_age_seconds",
+        "records",
+        "result_changed",
+        "question_source",
+    ):
+        field = timeline_field(event.get(key))
+        if field is not None:
+            value[key] = field
+    line = json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+    try:
+        timeline_path.parent.mkdir(parents=True, exist_ok=True)
+        with timeline_lock_path.open("a+", encoding="utf-8") as lock_stream:
+            fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX)
+            with timeline_path.open("a", encoding="utf-8") as stream:
+                stream.write(line + "\n")
+                stream.flush()
+    except OSError as exc:
+        print(f"cursor result watcher: timeline append unavailable: {exc}", file=sys.stderr)
+
+
 def persist(last_state: str | None, activity: str | None, activity_at: float | None, details: dict[str, Any]) -> None:
     # source_snapshot updates the append cursors in watch_state.  Persist the
     # complete cursor/checkpoint state so a watcher restart resumes from the
@@ -855,6 +932,7 @@ def persist(last_state: str | None, activity: str | None, activity_at: float | N
             "job_nonce": nonce,
             "mapping_path": str(mapping_path),
             "last_state": last_state,
+            "last_observation_reason": last_observation_reason,
             "last_activity_key": activity,
             "last_activity_at": activity_at,
         }
@@ -869,14 +947,48 @@ def persist(last_state: str | None, activity: str | None, activity_at: float | N
 
 
 last_state = text(watch_state.get("last_state"))
+last_observation_reason = text(watch_state.get("last_observation_reason"))
 last_activity = text(watch_state.get("last_activity_key"))
 last_activity_at = watch_state.get("last_activity_at") if isinstance(watch_state.get("last_activity_at"), (int, float)) else None
 poll_count = 0
+# `--once` is the supervisor's bounded polling mode.  Persist the first
+# process start so repeated one-shot polls do not turn the timeline into a
+# misleading stream of watcher-start events; a genuinely fresh job/state file
+# still records exactly one watcher_started event.
+watcher_started_at = watch_state.get("watcher_started_at")
+if not isinstance(watcher_started_at, (int, float)) or isinstance(watcher_started_at, bool):
+    watcher_started_at = clock_now()
+    watch_state["watcher_started_at"] = watcher_started_at
+    append_timeline("watcher_started", {"at": watcher_started_at})
+    persist(last_state, last_activity, last_activity_at, {})
 
 
 def emit(state: str, reason: str, details: dict[str, Any], activity: str | None, activity_at: float | None) -> None:
-    global last_state
+    global last_state, last_observation_reason
     if state == last_state:
+        # Keep the public watcher stream transition-only, but retain the
+        # reason change in the metadata-only timeline. This prevents an
+        # initial bridge-state-missing reason from obscuring a later
+        # result-missing/path-missing interval.
+        if last_observation_reason is not None and reason != last_observation_reason:
+            observation = {
+                "schema_version": 1,
+                "job_nonce": nonce,
+                "state": state,
+                "classification": state,
+                "reason": reason,
+                "previous_reason": last_observation_reason,
+                "at": clock_now(),
+                "workspace": workspace,
+                "surface": surface,
+                "cwd": str(cwd),
+            }
+            if activity_at is not None:
+                observation["activity_at"] = activity_at
+                observation["activity_age_seconds"] = round(max(0.0, observation["at"] - activity_at), 3)
+            observation.update({key: value for key, value in details.items() if value is not None and key != "latest_content"})
+            append_timeline("observation_changed", observation)
+        last_observation_reason = reason
         persist(last_state, activity, activity_at, details)
         return
     event = {
@@ -890,12 +1002,19 @@ def emit(state: str, reason: str, details: dict[str, Any], activity: str | None,
         "surface": surface,
         "cwd": str(cwd),
     }
+    if activity_at is not None:
+        event["activity_at"] = activity_at
+        event["activity_age_seconds"] = round(max(0.0, event["at"] - activity_at), 3)
     event.update({key: value for key, value in details.items() if value is not None and key != "latest_content"})
+    if state == "QUESTION":
+        event["question_source"] = "transcript" if reason == "result-question" else "pane"
     watcher_sink.parent.mkdir(parents=True, exist_ok=True)
     with watcher_sink.open("a", encoding="utf-8") as stream:
         stream.write(json.dumps(event, separators=(",", ":")) + "\n")
+    append_timeline("state_changed", event)
     print(json.dumps(event, separators=(",", ":")), flush=True)
     last_state = state
+    last_observation_reason = reason
     persist(last_state, activity, activity_at, details)
 
 
