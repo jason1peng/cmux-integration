@@ -1,6 +1,15 @@
 {
   "profile_id": "cursor",
   "schema_version": 1,
+  "capability_policy_version": 1,
+  "capability_adapter": {
+    "required": true,
+    "version": 1,
+    "discovery": ["local_skill_metadata", "mcp_metadata"],
+    "request_transport": "profile-owned-transcript",
+    "readiness": "supervisor-verifies-manifest-and-task-digests",
+    "version_skew_reason": "capability-protocol-version-skew"
+  },
   "launch": {
     "command": "agent",
     "argv": [
@@ -49,7 +58,7 @@
   "transcript": {
     "source": "${CMUX_AGENT_RUNTIME}/jobs/${job_nonce}/cursor.pty-result.ndjson",
     "kind": "hook-provided-cursor-jsonl",
-    "freshness": "supervisor mapping source.start_offset, source.launch_mtime_ns, source.exists_at_launch, and source.created_after_launch are required; zero is valid only for a source created after launch; existing sources require path/device/inode/size/mtime identity; reject truncation, replacement, and stale source identity",
+    "freshness": "supervisor mapping source.path, source.start_offset, source.launch_mtime_ns, source.exists_at_launch, and source.created_after_launch are required for every source; source.path is canonical absolute and a source created after launch starts at zero, while an existing source may start at its recorded launch size including zero; existing sources require device/inode/size/mtime identity; reject truncation, replacement, and stale source identity",
     "prompt_echo_rule": "exclude user records and exact or segment prompt echoes; reject markers present only in submitted input, reflected prompt echo, or screen text",
     "authoritative_content": "only fresh assistant/tool records normalized from the first usable hook-provided transcript_path",
     "bridge": {
@@ -67,8 +76,8 @@
         "afterAgentResponse",
         "stop"
       ],
-      "path_rule": "capture the first usable non-null CURSOR_TRANSCRIPT_PATH or transcript_path supplied by a correlated hook; null or future paths are observations only; never scan undocumented Cursor directories",
-      "normalization": "fresh complete JSONL records after the supervisor boundary; preserve source offsets; exclude user records and exact/segment prompt echoes; deduplicate semantic replay; reject malformed/truncated/replaced/uncorrelated sources"
+      "path_rule": "capture the first usable non-null CURSOR_TRANSCRIPT_PATH or transcript_path supplied by a correlated hook only when it exactly matches supervisor mapping source.path; null or future paths are observations only; never scan undocumented Cursor directories",
+      "normalization": "fresh complete JSONL records after the supervisor boundary; preserve source offsets; exclude user records and exact/segment prompt echoes; deduplicate semantic replay; stage result/event evidence durably and commit the source cursor only after both sinks, with idempotent crash/replay recovery; reject malformed/truncated/replaced/uncorrelated sources"
     }
   },
   "watcher": {
@@ -102,25 +111,10 @@
       "backoff_seconds": [15, 30, 60],
       "backoff_cap_seconds": 60,
       "reset_on": "fresh correlated transcript or bridge-event activity",
-      "policy": "routine-command-v1",
-      "routine_command_allowlist": [
-        "pwd",
-        "ls",
-        "find",
-        "rg",
-        "grep",
-        "cat",
-        "head",
-        "tail",
-        "sed",
-        "git status",
-        "git diff",
-        "git log",
-        "git show",
-        "git rev-parse",
-        "git branch",
-        "git ls-files"
-      ],
+      "policy": "routine-command-v2",
+      "command_policy": "${CMUX_AGENT_CONFIG}/bin/cmux-agent-command-policy.py",
+      "scope_source": "supervisor mapping declared_scope; canonical cwd is supplied separately",
+      "version_skew_reason": "capability-protocol-version-skew",
       "mandatory_escalation_categories": [
         "destructive",
         "credential",

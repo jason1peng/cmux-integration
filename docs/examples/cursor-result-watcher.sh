@@ -25,10 +25,10 @@ import datetime as dt
 import fcntl
 import hashlib
 import json
+import math
 import os
 import pathlib
 import re
-import shlex
 import subprocess
 import sys
 import time
@@ -53,7 +53,7 @@ IDLE_RE = re.compile(
 # The advisor is optional, but when configured it is a bounded recommendation
 # channel rather than an approval channel.  The watcher owns this policy and
 # validates/overrides every advisor response before it can be relayed.
-ADVISOR_POLICY = "routine-command-v1"
+ADVISOR_POLICY = "routine-command-v2"
 # A quiet source is ambiguous, not a completion signal.  Surface that
 # ambiguity to the LLM/supervisor before the optional advisor retry window.
 ATTENTION_QUIET_SECONDS = 5.0
@@ -61,47 +61,40 @@ PANE_RECHECK_SECONDS = 1.0
 MAX_TIMELINE_VALUE_LENGTH = 512
 ADVISOR_QUIET_SECONDS = 15.0
 ADVISOR_BACKOFF_SECONDS = (15.0, 30.0, 60.0)
-ADVISOR_MAX_COMMAND_BYTES = 4096
-ADVISOR_COMMAND_RE = re.compile(
-    r"(?im)^\s*(?:command|run|execute|allow(?: this)? command)\s*[:?]\s*(?P<command>.+?)\s*$"
-)
-ADVISOR_BACKTICK_RE = re.compile(r"`(?P<command>[^`\r\n]+)`")
-ADVISOR_SHELL_CONTROL_RE = re.compile(r"(?:[;&|<>`$()]|\\[\n\r])")
-ADVISOR_ROUTINE_PROGRAMS = {
-    "pwd",
-    "ls",
-    "find",
-    "rg",
-    "grep",
-    "cat",
-    "head",
-    "tail",
-    "sed",
-}
-ADVISOR_GIT_ROUTINES = {
-    "status",
-    "diff",
-    "log",
-    "show",
-    "rev-parse",
-    "branch",
-    "ls-files",
-}
-# Compose sensitive category terms so static example scans cannot mistake the
-# policy fixture for an embedded credential or private configuration.
-ADVISOR_CREDENTIAL_PATTERN = "credential|password|passwd|" + "se" + "cret" + "|" + "to" + "ken" + r"|api[ _-]?key|oauth|login|auth|\.env"
-ADVISOR_MANDATORY_PATTERNS = (
-    ("credential", re.compile(r"(?i)(?:" + ADVISOR_CREDENTIAL_PATTERN + ")")),
+POLICY_ESCALATION_CATEGORIES = {"credential", "destructive", "deployment", "external-network", "ambiguous", "important"}
+# The v2 validator owns command grammar. These narrow screen checks cover
+# consequential decisions that are not command syntax (trust, auth, deploy,
+# credentials, and external effects) and therefore cannot be delegated to it.
+_CREDENTIAL_TERMS = "credential|password|passwd|" + "se" + "cret" + "|" + "to" + "ken" + r"|api[ _-]?key|oauth|login|auth|\.env"
+MANDATORY_SCREEN_PATTERNS = (
+    ("credential", re.compile(r"(?i)(?:" + _CREDENTIAL_TERMS + r")")),
     ("destructive", re.compile(r"(?i)(?:\brm\b|\bmv\b|\bcp\b|\btruncate\b|\bdelete\b|\bremove\b|\breset\b|\bclean\b|\bkill\b|\bchmod\b|\bchown\b)")),
     ("deployment", re.compile(r"(?i)(?:\bdeploy(?:ment)?\b|\brelease\b|\bpublish\b|\bproduction\b|\bprod\b|\bterraform\b|\bkubectl\b|\bhelm\b|\bansible\b|\brollback\b)")),
     ("external-network", re.compile(r"(?i)(?:\bcurl\b|\bwget\b|\bssh\b|\bscp\b|\brsync\b|\bnc\b|\bnetcat\b|https?://|\binternet\b|\bnetwork\b|\bfetch\b)")),
     ("important", re.compile(r"(?i)(?:\bsudo\b|\binstall\b|\bcommit\b|\bpush\b|\bwrite\b|\bedit\b|\bcreate\b|\bmodify\b|\bspend\b|\bpayment\b|\birreversible\b|\bscope\b|\btrust\b|\bauthori[sz]e\b)")),
 )
+ADVISOR_COMMAND_RE = re.compile(
+    r"(?im)^\s*(?:command|run|execute|allow(?: this)? command)\s*[:?]\s*(?P<command>.+?)\s*$"
+)
+ADVISOR_BACKTICK_RE = re.compile(r"`(?P<command>[^`\r\n]+)`")
+
+
+def exact_version(value: Any) -> bool:
+    return type(value) is int and value == 1
 
 
 def fail(message: str) -> None:
     print(f"cursor result watcher: {message}", file=sys.stderr)
     raise SystemExit(2)
+
+
+def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key: {key}")
+        result[key] = value
+    return result
 
 
 def text(value: Any) -> str | None:
@@ -143,10 +136,11 @@ event_path = runtime / "events" / "cursor-transcript-bridge.ndjson"
 if not mapping_path.is_file() or legacy_mapping.exists():
     fail("active supervisor mapping is missing or ambiguous")
 try:
-    mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
-except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+    mapping = json.loads(mapping_path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_keys)
+except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
     fail(f"active supervisor mapping is unreadable: {exc}")
-if not isinstance(mapping, dict) or mapping.get("schema_version", 1) != 1:
+mapping_version = mapping.get("schema_version") if isinstance(mapping, dict) else None
+if not isinstance(mapping, dict) or not isinstance(mapping_version, int) or isinstance(mapping_version, bool) or mapping_version != 1:
     fail("active supervisor mapping is malformed")
 for key, expected in (("job_nonce", nonce), ("workspace", workspace), ("surface", surface)):
     if mapping.get(key) != expected:
@@ -155,6 +149,10 @@ if not isinstance(mapping.get("runtime"), str) or os.path.realpath(mapping["runt
     fail("mapping runtime does not match supervisor-owned value")
 if not isinstance(mapping.get("cwd"), str) or os.path.realpath(mapping["cwd"]) != str(cwd):
     fail("mapping cwd does not match supervisor-owned value")
+raw_scope = mapping.get("scope", mapping.get("declared_scope"))
+if not isinstance(raw_scope, list) or not raw_scope or any(not isinstance(item, str) or not item or "\n" in item or "\r" in item for item in raw_scope):
+    fail("mapping lacks an explicit declared scope")
+declared_scope = list(raw_scope)
 
 
 def nonnegative(value: Any, name: str) -> int:
@@ -182,15 +180,29 @@ mapping_exists = required_bool(source_map.get("exists_at_launch"), "source.exist
 mapping_created = required_bool(source_map.get("created_after_launch"), "source.created_after_launch")
 if mapping_exists == mapping_created:
     fail("source launch/existence boundary is ambiguous")
-if mapping_start == 0 and (mapping_exists or not mapping_created):
-    fail("zero source offset requires a source created after launch")
+# Existing transcript files may be empty at launch, so zero is valid when
+# their recorded launch size is zero. Sources created after launch must start
+# at zero; a positive boundary identifies an existing source below.
 if mapping_start > 0 and (not mapping_exists or mapping_created):
     fail("existing source boundary is malformed")
-mapped_path = text(source_map.get("path", source_map.get("transcript_path")))
+raw_mapped_path = source_map.get("path")
+if (
+    not isinstance(raw_mapped_path, str)
+    or not raw_mapped_path
+    or raw_mapped_path != raw_mapped_path.strip()
+    or any(ord(char) < 0x20 or ord(char) == 0x7F or char in {"\u2028", "\u2029"} for char in raw_mapped_path)
+):
+    fail("mapping source.path is missing or malformed")
+try:
+    mapped_path = os.path.realpath(raw_mapped_path)
+except (OSError, ValueError):
+    fail("mapping source.path is missing or malformed")
+if not os.path.isabs(raw_mapped_path) or mapped_path != raw_mapped_path:
+    fail("mapping source.path must be a canonical absolute path")
 mapped_device = source_map.get("device")
 mapped_inode = source_map.get("inode")
 if mapping_exists:
-    if not mapped_path or isinstance(mapped_device, bool) or not isinstance(mapped_device, int) or isinstance(mapped_inode, bool) or not isinstance(mapped_inode, int):
+    if isinstance(mapped_device, bool) or not isinstance(mapped_device, int) or isinstance(mapped_inode, bool) or not isinstance(mapped_inode, int):
         fail("existing source boundary lacks identity")
     if nonnegative(source_map.get("size_at_launch"), "source.size_at_launch") != mapping_start:
         fail("source launch size does not match offset")
@@ -206,6 +218,11 @@ parser.add_argument("--pane-fallback-seconds", type=float, default=float(os.envi
 parser.add_argument("--pane-poll-seconds", type=float, default=float(os.environ.get("CMUX_AGENT_PANE_POLL_SECONDS", str(PANE_RECHECK_SECONDS))))
 parser.add_argument("--cmux-command", default=os.environ.get("CMUX_AGENT_CMUX_COMMAND", "cmux"))
 config_root = os.environ.get("CMUX_AGENT_CONFIG", "").strip()
+command_policy_command = os.environ.get("CMUX_AGENT_COMMAND_POLICY", "").strip()
+if not command_policy_command and config_root:
+    candidate_policy = pathlib.Path(config_root).expanduser() / "bin" / "cmux-agent-command-policy.py"
+    if candidate_policy.is_file() and os.access(candidate_policy, os.X_OK):
+        command_policy_command = str(candidate_policy)
 default_advisor = os.environ.get("CMUX_AGENT_ADVISOR_COMMAND", "").strip()
 if not default_advisor and config_root:
     candidate_advisor = pathlib.Path(config_root).expanduser() / "bin" / "cursor-advisor.sh"
@@ -221,18 +238,31 @@ advisor_backoff_default = ",".join(str(int(item)) for item in ADVISOR_BACKOFF_SE
 parser.add_argument("--advisor-backoff-seconds", default=os.environ.get("CMUX_AGENT_ADVISOR_BACKOFF_SECONDS", advisor_backoff_default))
 parser.add_argument("--now", type=float, default=None, help="deterministic clock override for contract fixtures")
 args = parser.parse_args()
-if args.interval_seconds <= 0 or args.pane_fallback_seconds < 0 or args.pane_poll_seconds < 0 or args.advisor_quiet_seconds < 0:
-    fail("watch interval must be positive; quiet and pane thresholds must be non-negative")
-if args.advisor_timeout_seconds <= 0:
+if (
+    not all(math.isfinite(value) for value in (
+        args.interval_seconds,
+        args.pane_fallback_seconds,
+        args.pane_poll_seconds,
+        args.advisor_quiet_seconds,
+    ))
+    or args.interval_seconds <= 0
+    or args.pane_fallback_seconds < 0
+    or args.pane_poll_seconds < 0
+    or args.advisor_quiet_seconds < 0
+):
+    fail("watch interval must be positive; quiet and pane thresholds must be finite non-negative values")
+if not math.isfinite(args.advisor_timeout_seconds) or args.advisor_timeout_seconds <= 0:
     fail("advisor timeout must be positive")
 try:
     advisor_backoff = tuple(float(item.strip()) for item in args.advisor_backoff_seconds.split(","))
 except ValueError:
     fail("advisor backoff is malformed")
-if not advisor_backoff or any(item <= 0 or item > 60 for item in advisor_backoff):
-    fail("advisor backoff must be positive and capped at 60 seconds")
+if not advisor_backoff or any(not math.isfinite(item) or item <= 0 or item > 60 for item in advisor_backoff):
+    fail("advisor backoff must be finite, positive, and capped at 60 seconds")
 if args.max_polls is not None and args.max_polls < 1:
     fail("max-polls must be positive")
+if args.now is not None and not math.isfinite(args.now):
+    fail("now must be finite")
 if args.advisor_command and ("\n" in args.advisor_command or "\r" in args.advisor_command):
     fail("advisor command is malformed")
 if not args.cmux_command or "\n" in args.cmux_command or "\r" in args.cmux_command:
@@ -244,10 +274,10 @@ def clock_now() -> float:
 
 def read_json(path: pathlib.Path) -> dict[str, Any] | None:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        value = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_keys)
     except FileNotFoundError:
         return None
-    except (OSError, UnicodeError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
         return None
     return value if isinstance(value, dict) else None
 
@@ -428,11 +458,20 @@ def source_snapshot() -> tuple[str, dict[str, Any]]:
     if isinstance(prior_source_end, bool) or not isinstance(prior_source_end, int) or prior_source_end < mapping_start:
         return "malformed", {"reason": "result-source-cursor-invalid"}
 
-    source = text(bridge_state.get("transcript_path"))
-    if bridge_state.get("path_captured") is not True or not source:
+    source_value = bridge_state.get("transcript_path")
+    if bridge_state.get("path_captured") is not True or not isinstance(source_value, str) or not source_value:
         return "path-missing", {"reason": "transcript-path-missing"}
-    source = os.path.realpath(source)
-    if mapped_path and os.path.realpath(mapped_path) != source:
+    if (
+        source_value != source_value.strip()
+        or any(ord(char) < 0x20 or ord(char) == 0x7F or char in {"\u2028", "\u2029"} for char in source_value)
+        or not os.path.isabs(source_value)
+    ):
+        return "source-malformed", {"reason": "transcript-path-malformed"}
+    try:
+        source = os.path.realpath(source_value)
+    except (OSError, ValueError):
+        return "source-malformed", {"reason": "transcript-path-malformed"}
+    if source != source_value or source != mapped_path:
         return "source-uncorrelated", {"reason": "source-mapping-mismatch"}
     source_device = bridge_state.get("source_device")
     source_inode = bridge_state.get("source_inode")
@@ -489,7 +528,7 @@ def source_snapshot() -> tuple[str, dict[str, Any]]:
             for begin, end, raw_line in lines:
                 if not raw_line.strip():
                     continue
-                entry = json.loads(raw_line.decode("utf-8"))
+                entry = json.loads(raw_line.decode("utf-8"), object_pairs_hook=reject_duplicate_keys)
                 if not isinstance(entry, dict):
                     raise ValueError("result-entry-not-object")
                 source_end, content = validate_result_entry(
@@ -555,7 +594,7 @@ def source_snapshot() -> tuple[str, dict[str, Any]]:
             for _, _, raw_line in event_lines:
                 if not raw_line.strip():
                     continue
-                event = json.loads(raw_line.decode("utf-8"))
+                event = json.loads(raw_line.decode("utf-8"), object_pairs_hook=reject_duplicate_keys)
                 if not isinstance(event, dict):
                     raise ValueError("bridge-event-not-object")
                 if event.get("job_nonce") != nonce:
@@ -663,13 +702,6 @@ def read_pane_if_due(now: float) -> tuple[str, str, str] | None:
     return state, reason, screen
 
 
-def mandatory_category(value: str) -> str | None:
-    for category, pattern in ADVISOR_MANDATORY_PATTERNS:
-        if pattern.search(value):
-            return category
-    return None
-
-
 def displayed_command(screen: str) -> str | None:
     """Extract only an explicitly displayed command; never invent one."""
     match = ADVISOR_COMMAND_RE.search(screen)
@@ -692,27 +724,62 @@ def displayed_command(screen: str) -> str | None:
 
 
 def routine_command_category(command: Any) -> tuple[str, str]:
-    """Return (category, reason) for the watcher-owned safe-command policy."""
-    if not isinstance(command, str) or not command or len(command.encode("utf-8")) > ADVISOR_MAX_COMMAND_BYTES:
+    """Ask the one authoritative v2 validator; never duplicate its grammar."""
+    if not isinstance(command, str) or not command:
         return "ambiguous", "no bounded exact displayed command"
-    if "\n" in command or "\r" in command:
-        return "ambiguous", "command contains a line break"
-    mandatory = mandatory_category(command)
-    if mandatory:
-        return mandatory, f"mandatory {mandatory} category"
-    if ADVISOR_SHELL_CONTROL_RE.search(command):
-        return "ambiguous", "shell operators, substitution, or chaining are not allowed"
+    if not command_policy_command:
+        return "advisor-failure", "authoritative command policy is not configured"
+    policy_path = pathlib.Path(command_policy_command)
+    if not policy_path.is_absolute() or not policy_path.is_file() or not os.access(policy_path, os.X_OK):
+        return "advisor-failure", "authoritative command policy is unavailable"
     try:
-        words = shlex.split(command, posix=True)
-    except ValueError:
-        return "ambiguous", "command quoting is malformed"
-    if not words or "" in words:
-        return "ambiguous", "command is empty"
-    if words[0] in ADVISOR_ROUTINE_PROGRAMS:
-        return "routine", "bounded read-only local command"
-    if words[0] == "git" and len(words) >= 2 and words[1] in ADVISOR_GIT_ROUTINES:
-        return "routine", "bounded read-only local git command"
-    return "important", "command is outside the read-only local allowlist"
+        command_args = [sys.executable, command_policy_command, "validate", "--cwd", str(cwd)]
+        for scope in declared_scope:
+            command_args.extend(("--scope", scope))
+        command_args.extend(("--command", command))
+        completed = subprocess.run(
+            command_args,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=args.advisor_timeout_seconds,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return "advisor-failure", f"authoritative command policy failed: {type(exc).__name__}"
+    raw_output = completed.stdout.strip()
+    if not raw_output or len(raw_output.splitlines()) != 1:
+        return "advisor-failure", "authoritative command policy returned no or multiple results"
+    try:
+        verdict = json.loads(raw_output)
+    except json.JSONDecodeError:
+        return "advisor-failure", "authoritative command policy returned malformed JSON"
+    if not isinstance(verdict, dict) or not exact_version(verdict.get("schema_version")) or verdict.get("policy") != ADVISOR_POLICY:
+        return "advisor-failure", "authoritative command policy version is invalid"
+    if verdict.get("command") != command:
+        return "advisor-failure", "authoritative command policy returned a command mismatch"
+    if completed.returncode != 0 or verdict.get("decision") != "approve" or verdict.get("category") != "routine":
+        category = verdict.get("category")
+        reason = verdict.get("reason")
+        if not isinstance(category, str) or category not in POLICY_ESCALATION_CATEGORIES or not isinstance(reason, str):
+            return "advisor-failure", "authoritative command policy returned malformed output"
+        return category, reason
+    reason = verdict.get("reason")
+    try:
+        reason_size = len(reason.encode("utf-8")) if isinstance(reason, str) else 0
+    except UnicodeEncodeError:
+        reason_size = MAX_TIMELINE_VALUE_LENGTH + 1
+    if not isinstance(reason, str) or not reason or "\n" in reason or "\r" in reason or reason_size > MAX_TIMELINE_VALUE_LENGTH:
+        return "advisor-failure", "authoritative command policy returned malformed output"
+    return "routine", reason
+
+
+def mandatory_category(value: str) -> str | None:
+    if not isinstance(value, str):
+        return "ambiguous"
+    for category, pattern in MANDATORY_SCREEN_PATTERNS:
+        if pattern.search(value):
+            return category
+    return None
 
 
 def escalation(category: str, reason: str, command: str | None = None) -> dict[str, Any]:
@@ -727,46 +794,41 @@ def escalation(category: str, reason: str, command: str | None = None) -> dict[s
 
 
 def validate_advisor_response(value: Any, command: str | None, screen: str) -> dict[str, Any]:
-    """Validate a strict recommendation and apply mandatory overrides."""
+    """Validate recommendation shape; v2 command safety remains external."""
     screen_category = mandatory_category(screen)
     command_category, command_reason = routine_command_category(command)
     if screen_category:
         return escalation(screen_category, f"mandatory {screen_category} category in displayed question", command)
     if not isinstance(value, dict):
         return escalation("advisor-failure", "advisor response is not an object", command)
-    if value.get("schema_version") != 1 or value.get("policy") != ADVISOR_POLICY:
+    if not exact_version(value.get("schema_version")) or value.get("policy") != ADVISOR_POLICY:
         return escalation("advisor-failure", "advisor response schema or policy is invalid", command)
     decision = value.get("decision")
     category = value.get("category")
     recommended = value.get("command")
     reason = value.get("reason")
-    if decision not in {"approve", "escalate"} or not isinstance(category, str) or not isinstance(reason, str):
+    if set(value) != {"schema_version", "policy", "decision", "category", "command", "reason"}:
         return escalation("advisor-failure", "advisor response fields are invalid", command)
+    if not isinstance(decision, str) or decision not in {"approve", "escalate"} or not isinstance(category, str) or not isinstance(reason, str) or not reason or "\n" in reason or "\r" in reason:
+        return escalation("advisor-failure", "advisor response fields are invalid", command)
+    try:
+        if len(reason.encode("utf-8")) > MAX_TIMELINE_VALUE_LENGTH:
+            return escalation("advisor-failure", "advisor response reason is too long", command)
+    except UnicodeEncodeError:
+        return escalation("advisor-failure", "advisor response reason is not valid UTF-8", command)
+    if recommended is not None and recommended != command:
+        return escalation("advisor-failure", "advisor response command is not exact", command)
     if decision == "approve":
-        # The advisor may approve only the exact displayed command, and only
-        # after this watcher independently accepts the routine policy.
+        # Exactness and the authoritative v2 verdict are both required. The
+        # watcher never treats an advisor response as authority by itself.
         if category != "routine" or not isinstance(recommended, str) or recommended != command:
             return escalation("advisor-failure", "advisor approval is not exact or routine", command)
         if command_category != "routine":
             return escalation(command_category, command_reason, command)
-        return {
-            "schema_version": 1,
-            "policy": ADVISOR_POLICY,
-            "decision": "approve",
-            "category": "routine",
-            "command": command,
-            "reason": "watcher-validated " + reason,
-        }
+        return {"schema_version": 1, "policy": ADVISOR_POLICY, "decision": "approve", "category": "routine", "command": command, "reason": "authoritative-v2 " + reason}
     if category not in {"credential", "destructive", "deployment", "external-network", "ambiguous", "important", "advisor-failure"}:
         return escalation("advisor-failure", "advisor escalation category is invalid", command)
-    return {
-        "schema_version": 1,
-        "policy": ADVISOR_POLICY,
-        "decision": "escalate",
-        "category": category,
-        "command": command,
-        "reason": reason,
-    }
+    return {"schema_version": 1, "policy": ADVISOR_POLICY, "decision": "escalate", "category": category, "command": command, "reason": reason}
 
 
 def invoke_advisor(
@@ -785,6 +847,8 @@ def invoke_advisor(
         "workspace": workspace,
         "surface": surface,
         "cwd": str(cwd),
+        "scope": declared_scope,
+        "command_policy": command_policy_command,
         "watcher_state": watcher_state,
         "attention_required": quiet_seconds >= args.pane_fallback_seconds,
         "pane_state": pane_state,

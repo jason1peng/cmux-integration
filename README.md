@@ -28,6 +28,8 @@ new cmux-agent pane/surface
     └── artifact/check + turn-settled idle corroboration
 ```
 
+The existing direct Pi prompt remains the default path. Optional `supervised_cli_refresh` and `manual_handoff` routes use one canonical hashed task core; route metadata stays outside the hash. A manual import is labeled `manual`/`unsupervised`, while a supervised refresh must satisfy the normal fresh evidence gate.
+
 A hook event is only a wake-up signal and identity/path observation. The supervisor reports success only when all of these agree:
 
 1. the lifecycle event is fresh, correlated, and has an acceptable status;
@@ -55,7 +57,7 @@ The supervisor renders this report after `job_finished` for successful, failed, 
 - It does not auto-detect whether Cursor or agy is installed.
 - It does not install or modify user hooks, credentials, profiles, or transcripts.
 - It does not silently add `--force` or `--yolo`.
-- It does not provide the agy wrapper or agy-specific hook files.
+- It does not install the agy wrapper or agy-specific hook files implicitly; reviewed templates are supplied for explicit operator installation.
 - Cursor batch (`--print --output-format stream-json`) and ACP remain deferred; interactive Cursor is the supported Cursor transport in this slice.
 
 ## Installation map
@@ -90,6 +92,7 @@ When copying the project agent to the global agent directory, change its relativ
 | --- | --- | --- | --- |
 | Cursor executor profile | `docs/examples/executor-profile.cursor.json` | `~/.config/cmux-agent/profiles/cursor.json` | Yes |
 | Deterministic result watcher | `docs/examples/cursor-result-watcher.sh` | `~/.config/cmux-agent/bin/cursor-result-watcher.sh` | Yes |
+| Authoritative command policy | `tools/cmux-agent-command-policy.py` | `~/.config/cmux-agent/bin/cmux-agent-command-policy.py` | Required with advisor |
 | Transcript bridge hook | `docs/examples/cursor-transcript-bridge.sh` | `~/.cursor/hooks/cursor-transcript-bridge.sh` | Yes |
 | Stop notification hook | `docs/examples/cursor-stop-notify.sh` | `~/.cursor/hooks/cursor-stop-notify.sh` | Optional wakeup |
 | Cursor hook registration | `docs/examples/cursor-hooks.json` | Merge into `~/.cursor/hooks.json` | Yes for bridge |
@@ -158,7 +161,9 @@ agy support is compatibility support for an existing agy installation. This repo
 - `~/bin/agy-with-permissions` — executable agy launch wrapper (template: `docs/examples/agy-with-permissions.sh`);
 - `~/bin/agy-hook-notify.sh` — executable `PostInvocation` lifecycle adapter (template: `docs/examples/agy-hook-notify.sh`);
 - a `PostInvocation` hook named `agy-result-hook` registered in the global agy hooks config (fragment: `docs/examples/agy-result-hook.hooks.json`); and
-- `~/agi-result.txt` — the agy result/transcript source. The path is part of the profile contract (the adapter and the profile must agree); it is not an environment override.
+- `~/agi-result.txt` — the agy normalized result source. The path is part of the profile contract (the adapter, supervisor mapping, and profile must agree); it is not an environment override.
+
+The supervisor also persists `jobs/<job_nonce>/agy.mapping.json` before launch with the canonical raw transcript path, source/result identities, and byte boundaries. The adapter rejects a hook-supplied `transcriptPath` that is not exactly the mapped canonical source and never re-emits pre-launch transcript bytes.
 
 The templates are placed locally by the operator (or by `agy-install.sh` with explicit confirmation); this repository never silently creates, copies, or modifies user hooks. Product-specific items (the agy CLI, credentials, and working hook registration) remain the local agy installation. If any agy prerequisite is absent, leave agy unselected and use Cursor; the supervisor fails closed rather than falling back to screen polling.
 
@@ -198,7 +203,10 @@ The profile points at a machine-local watcher path. Install that reviewed, dispo
 mkdir -p "$CMUX_AGENT_CONFIG/bin"
 cp "$repo/docs/examples/cursor-result-watcher.sh" \
    "$CMUX_AGENT_CONFIG/bin/cursor-result-watcher.sh"
-chmod +x "$CMUX_AGENT_CONFIG/bin/cursor-result-watcher.sh"
+cp "$repo/tools/cmux-agent-command-policy.py" \
+   "$CMUX_AGENT_CONFIG/bin/cmux-agent-command-policy.py"
+chmod +x "$CMUX_AGENT_CONFIG/bin/cursor-result-watcher.sh" \
+         "$CMUX_AGENT_CONFIG/bin/cmux-agent-command-policy.py"
 ```
 
 The watcher is the deterministic polling component: it compares bounded
@@ -302,7 +310,7 @@ The installer asks before copying `~/bin/agy-with-permissions` and `~/bin/agy-ho
 
 ### 2. Result-file setup
 
-The result source is `${HOME}/agi-result.txt`. The path is fixed by the profile contract so the adapter and the supervisor read the same file; relocating it means changing both the installed adapter and the machine-local `agy.json` `transcript.source` together. The hook creates the file with its first append; no empty placeholder is installed in advance. Confirm the Pi process can read it and can write the runtime event sink.
+The result source is `${HOME}/agi-result.txt`. The path is fixed by the profile contract so the adapter, the supervisor's `agy.mapping.json`, and the machine-local `agy.json` `transcript.source` all name the same canonical file; relocating it means changing all three together. The hook creates the file with its first append; no empty placeholder is installed in advance. Before launch, the supervisor records source and result identities plus byte boundaries and exports `CMUX_AGENT_JOB_RUNTIME` and `CMUX_AGENT_JOB_NONCE` to the hook. The adapter stages result/event evidence and commits the source cursor only after both sinks; interrupted callbacks recover idempotently without duplicate completion evidence. Confirm the Pi process can read the mapped source and write the runtime event sink.
 
 ### 3. Install the profile
 
@@ -363,9 +371,12 @@ The same approval, question, timeout, marker, artifact, and fail-closed rules ap
 Run the repository checks from the checkout:
 
 ```bash
+bash tests/cmux-agent-command-policy-contract.sh
+bash tests/cmux-agent-capability-protocol-contract.sh
 bash tests/cmux-agent-orchestration-contract.sh
 bash tests/executor-profile-contract.sh
 bash tests/agy-executor-contract.sh
+bash tests/cmux-agent-timeline-contract.sh
 bash tests/cursor-transcript-bridge-contract.sh
 bash -n tests/*.sh docs/examples/*.sh
 python3 -m json.tool <each changed JSON file>
