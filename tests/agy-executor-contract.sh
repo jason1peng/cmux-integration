@@ -57,12 +57,14 @@ runtime=$(mktemp -d "${TMPDIR:-/tmp}/cmux-agy-contract.XXXXXX")
 transcript="$runtime/transcript.jsonl"
 result_file="$runtime/agi-result.txt"
 sink="$runtime/events/agy-result.ndjson"
+nonce="agy-contract-nonce-001"
+job_dir="$runtime/jobs/$nonce"
+mkdir -p "$job_dir"
 trap 'rm -rf "$runtime"' EXIT
 
-# A candidate transcript mirroring the real agy JSONL shape: model output in
-# PLANNER_RESPONSE entries with markers arriving as \\n escapes inside JSON
-# strings, plus a USER_REQUEST entry carrying the same markers as prompt echo.
-nonce="agy-contract-nonce-001"
+# The old model output is present before the supervisor's launch boundary. The
+# fresh model output is appended only after the mapping is persisted; a valid
+# adapter must never copy the old marker into the result source.
 python3 - "$transcript" "$nonce" <<'PY'
 import json
 import sys
@@ -71,17 +73,56 @@ path, nonce = sys.argv[1], sys.argv[2]
 entries = [
     {"step_index": 0, "source": "USER", "type": "USER_REQUEST", "status": "DONE",
      "content": f"Create proof.txt. Reply with:\n<!-- CMX_JOB {nonce} -->\n<!-- GOAL_COMPLETE -->"},
-    {"step_index": 1, "source": "MODEL", "type": "TOOL_CALL_REQUEST", "status": "DONE",
-     "content": "{\"name\": \"create_file\"}"},
+    {"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE",
+     "content": "<!-- CMX_JOB stale-nonce -->\n<!-- GOAL_COMPLETE -->"},
     {"step_index": 2, "source": "TOOL", "type": "TOOL_CALL_RESULT", "status": "DONE",
      "content": "file written"},
-    {"step_index": 3, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE",
-     "content": f"<!-- CMX_JOB {nonce} -->\n<!-- GOAL_COMPLETE -->"},
 ]
 with open(path, "w", encoding="utf-8") as stream:
     for entry in entries:
         stream.write(json.dumps(entry) + "\n")
 PY
+
+# Persist the exact source identity/path and byte boundary before appending the
+# fresh record. The normalized result has its own launch boundary as well.
+python3 - "$job_dir/agy.mapping.json" "$runtime" "$nonce" "$transcript" "$result_file" <<'PY'
+import json
+import os
+import sys
+import time
+
+mapping_path, runtime, nonce, transcript, result = sys.argv[1:]
+source_stat = os.stat(transcript)
+launch_ns = time.time_ns()
+mapping = {
+    "schema_version": 1,
+    "job_nonce": nonce,
+    "runtime": runtime,
+    "source": {
+        "path": transcript,
+        "start_offset": source_stat.st_size,
+        "launch_mtime_ns": source_stat.st_mtime_ns,
+        "exists_at_launch": True,
+        "created_after_launch": False,
+        "device": source_stat.st_dev,
+        "inode": source_stat.st_ino,
+        "size_at_launch": source_stat.st_size,
+        "mtime_ns_at_launch": source_stat.st_mtime_ns,
+    },
+    "result": {
+        "path": result,
+        "start_offset": 0,
+        "launch_mtime_ns": launch_ns,
+        "exists_at_launch": False,
+        "created_after_launch": True,
+    },
+}
+with open(mapping_path, "w", encoding="utf-8") as stream:
+    json.dump(mapping, stream, separators=(",", ":"))
+    stream.write("\n")
+PY
+
+printf '%s\n' '{"step_index":3,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"<!-- CMX_JOB agy-contract-nonce-001 -->\n<!-- GOAL_COMPLETE -->"}' >>"$transcript"
 
 event_count() {
   if [[ -s "$sink" ]]; then wc -l <"$sink" | tr -d '[:space:]'; else echo 0; fi
@@ -90,35 +131,65 @@ result_bytes() {
   if [[ -e "$result_file" ]]; then wc -c <"$result_file" | tr -d '[:space:]'; else echo 0; fi
 }
 run_adapter() {
-  printf '%s\n' "$1" | env HOME="$runtime" CMUX_AGENT_RUNTIME="$runtime" "$adapter"
+  printf '%s\n' "$1" | env HOME="$runtime" CMUX_AGENT_RUNTIME="$runtime" CMUX_AGENT_JOB_RUNTIME="$runtime" CMUX_AGENT_JOB_NONCE="$nonce" "$adapter"
 }
 
 valid_payload='{"transcriptPath":"'"$transcript"'","conversationId":"conversation-agy-test","invocationNum":3,"modelName":"auto"}'
 
-# A valid payload emits {}, one lifecycle event, and a DECODED fresh result
-# segment: model-authored lines only, with the nonce-framed marker pair on
-# adjacent REAL lines despite arriving as JSON escapes, and no prompt echo.
+# The adapter must use the supervisor's per-job runtime binding, not an
+# ambient/common runtime that happens to contain a similarly named job.
+if printf '%s\n' "$valid_payload" | env HOME="$runtime" CMUX_AGENT_RUNTIME="$runtime/wrong-runtime" CMUX_AGENT_JOB_RUNTIME="$runtime" CMUX_AGENT_JOB_NONCE="$nonce" "$adapter" >/dev/null 2>&1; then
+  echo "agy adapter accepted a mismatched common runtime" >&2
+  exit 1
+fi
+
+# Mapping versions are strict integers; JSON booleans must not compare equal to
+# version 1 under Python's bool/int equality rules.
+python3 - "$job_dir/agy.mapping.json" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+value = json.load(open(path, encoding="utf-8"))
+value["schema_version"] = True
+with open(path, "w", encoding="utf-8") as stream:
+    json.dump(value, stream, separators=(",", ":"))
+    stream.write("\n")
+PY
+if run_adapter "$valid_payload" >/dev/null 2>&1; then
+  echo "agy adapter accepted a boolean mapping schema version" >&2
+  exit 1
+fi
+python3 - "$job_dir/agy.mapping.json" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+value = json.load(open(path, encoding="utf-8"))
+value["schema_version"] = 1
+with open(path, "w", encoding="utf-8") as stream:
+    json.dump(value, stream, separators=(",", ":"))
+    stream.write("\n")
+PY
+
+# A valid payload emits {}, one lifecycle event, and only the model record
+# appended after the persisted launch boundary.
 stdout=$(run_adapter "$valid_payload")
 [[ "$stdout" == '{}' ]]
 [[ "$(event_count)" -eq 1 ]]
-python3 - "$result_file" "$nonce" <<'PY'
-import re
+python3 - "$result_file" <<'PY'
 import sys
 
 segment = open(sys.argv[1], encoding="utf-8").read()
-nonce = sys.argv[2]
-framed = re.compile(rf"^<!-- CMX_JOB {re.escape(nonce)} -->$\n^<!-- GOAL_COMPLETE -->$", re.M)
-assert framed.search(segment), (
-    "decoded segment must contain the nonce-framed marker on adjacent real lines"
+assert segment == "<!-- CMX_JOB agy-contract-nonce-001 -->\n<!-- GOAL_COMPLETE -->\n", (
+    "stale pre-launch completion markers must not be re-emitted"
 )
-assert len(framed.findall(segment)) == 1, "prompt-echo entries must be excluded"
-assert "Reply with:" not in segment, "user-request echo must not be captured"
+assert "stale-nonce" not in segment
 assert "file written" not in segment, "tool results must not be captured"
 PY
 
-# The normalized event must carry the profile's full dedupe identity plus the
-# hook-sourced correlation identity, with a stable event_id derived from the
-# real agy conversation/invocation/transcript-size triple.
+# The normalized event carries the configured source identity, the source
+# cursor, and a result-file offset that the completion gate can bind to its map.
 python3 - "$sink" "$transcript" <<'PY'
 import json, os, sys
 
@@ -126,28 +197,34 @@ sink, transcript = sys.argv[1], sys.argv[2]
 events = [json.loads(line) for line in open(sink, encoding="utf-8") if line.strip()]
 event = events[-1]
 required = {
-    "hook_event_name", "hook", "event_id", "executor_session",
+    "hook_event_name", "hook", "job_nonce", "event_id", "executor_session",
     "conversation_id", "invocation_num", "transcript_size",
-    "transcript_path", "transcript_offset", "status",
+    "transcript_path", "transcript_offset", "source_offset",
+    "source_start_offset", "status",
 }
 missing = required - set(event)
 assert not missing, f"event missing identity fields: {sorted(missing)}"
+assert event["job_nonce"] == "agy-contract-nonce-001"
 assert event["executor_session"] == event["conversation_id"] == "conversation-agy-test"
 size = os.path.getsize(transcript)
 assert event["transcript_size"] == size
-assert event["event_id"] == f"conversation-agy-test:3:{size}"
-assert event["transcript_path"] == transcript
-assert event["transcript_offset"] == 0, "first capture must start at byte 0"
+assert event["event_id"] == f"agy-contract-nonce-001:conversation-agy-test:3:{size}"
+assert event["transcript_path"] == os.path.realpath(transcript)
+assert event["source_offset"] == size
+assert event["source_start_offset"] < size
+assert event["transcript_offset"] == 0
 assert event["status"] == "success"
 PY
 
-# Replay: applying the profile's DECLARED deduplicate_by identity must treat
-# the identical payload as the same event (dedupe catches it), while each
-# accepted capture still advances the fresh-segment boundary metadata.
+# Replay: the declared identity remains stable and no source bytes or
+# lifecycle evidence are re-emitted. The adapter itself suppresses the
+# duplicate event, rather than relying on a downstream supervisor dedupe.
 before=$(event_count)
+bytes_before=$(result_bytes)
 stdout=$(run_adapter "$valid_payload")
 [[ "$stdout" == '{}' ]]
-[[ "$(event_count)" -eq $((before + 1)) ]]
+[[ "$(event_count)" -eq "$before" ]]
+[[ "$(result_bytes)" -eq "$bytes_before" ]]
 python3 - "$sink" "$profile_json" <<'PY'
 import json
 import sys
@@ -160,13 +237,89 @@ assert keys, "profile must declare a dedupe identity"
 def identity(event):
     return tuple(event[key] for key in keys)
 
-assert identity(events[0]) == identity(events[1]), (
-    f"replay of the same invocation must match the declared {keys} identity"
-)
-assert events[-1]["transcript_offset"] != events[0]["transcript_offset"], (
-    "offset is fresh-segment metadata and must advance per capture"
+assert len(events) == 1, "replayed invocation must not append a second event"
+assert events[-1]["source_offset"] == events[0]["source_offset"]
+assert all(events[0].get(key) not in (None, "") for key in keys), (
+    f"the event must expose its declared {keys} identity"
 )
 PY
+
+# A crash after result append, event append, or state replacement leaves a
+# durable pending transaction. The retry must recover it without duplicating
+# normalized output or lifecycle evidence.
+run_agy_crash_case() {
+  local point=$1
+  local case_runtime
+  case_runtime=$(mktemp -d "${TMPDIR:-/tmp}/cmux-agy-crash-${point}.XXXXXX")
+  case_runtime=$(cd "$case_runtime" && pwd -P)
+  local case_nonce="agy-crash-${point}"
+  local case_job="$case_runtime/jobs/$case_nonce"
+  local case_source="$case_runtime/transcript.jsonl"
+  local case_result="$case_runtime/agi-result.txt"
+  mkdir -p "$case_job"
+  : > "$case_source"
+  python3 - "$case_job/agy.mapping.json" "$case_runtime" "$case_nonce" "$case_source" "$case_result" <<'PY'
+import json, os, sys, time
+_, mapping_path, runtime, nonce, source, result = sys.argv
+source_stat = os.stat(source)
+json.dump({
+    "schema_version": 1,
+    "job_nonce": nonce,
+    "runtime": runtime,
+    "source": {
+        "path": source,
+        "start_offset": 0,
+        "launch_mtime_ns": source_stat.st_mtime_ns,
+        "exists_at_launch": True,
+        "created_after_launch": False,
+        "device": source_stat.st_dev,
+        "inode": source_stat.st_ino,
+        "size_at_launch": 0,
+        "mtime_ns_at_launch": source_stat.st_mtime_ns,
+    },
+    "result": {
+        "path": result,
+        "start_offset": 0,
+        "launch_mtime_ns": time.time_ns(),
+        "exists_at_launch": False,
+        "created_after_launch": True,
+    },
+}, open(mapping_path, "w", encoding="utf-8"), separators=(",", ":"))
+PY
+  printf '%s\n' '{"source":"MODEL","type":"PLANNER_RESPONSE","content":"crash output"}' >> "$case_source"
+  local payload='{"transcriptPath":"'"$case_source"'","conversationId":"crash-conversation","invocationNum":1}'
+  if printf '%s\n' "$payload" | env HOME="$case_runtime" CMUX_AGENT_RUNTIME="$case_runtime" CMUX_AGENT_JOB_RUNTIME="$case_runtime" CMUX_AGENT_JOB_NONCE="$case_nonce" CMUX_AGENT_TEST_CRASH_AT="$point" "$adapter" >/dev/null 2>&1; then
+    echo "agy crash injection did not interrupt at $point" >&2
+    rm -rf "$case_runtime"
+    exit 1
+  fi
+  [[ -e "$case_job/.agy-hook.pending.json" ]]
+  # Also exercise repair of a process-died partial lifecycle append; the
+  # staged event line and its sink offset make this safe and deterministic.
+  if [[ "$point" == "after-event" ]]; then
+    truncate -s $(( $(wc -c < "$case_runtime/events/agy-result.ndjson") - 1 )) "$case_runtime/events/agy-result.ndjson"
+  fi
+  printf '%s\n' "$payload" | env HOME="$case_runtime" CMUX_AGENT_RUNTIME="$case_runtime" CMUX_AGENT_JOB_RUNTIME="$case_runtime" CMUX_AGENT_JOB_NONCE="$case_nonce" "$adapter" >/dev/null
+  [[ "$(wc -c < "$case_result" | tr -d '[:space:]')" -eq 13 ]]
+  [[ "$(wc -l < "$case_runtime/events/agy-result.ndjson" | tr -d '[:space:]')" -eq 1 ]]
+  [[ ! -e "$case_job/.agy-hook.pending.json" ]]
+  rm -rf "$case_runtime"
+}
+for crash_point in after-result after-event after-state; do
+  run_agy_crash_case "$crash_point"
+done
+
+# A hook-supplied path outside the configured mapping is rejected even when it
+# contains plausible completion content.
+foreign_transcript="$runtime/foreign-transcript.jsonl"
+cp "$transcript" "$foreign_transcript"
+foreign_payload='{"transcriptPath":"'"$foreign_transcript"'","conversationId":"conversation-agy-test","invocationNum":4}'
+if run_adapter "$foreign_payload" >/dev/null 2>&1; then
+  echo "agy adapter accepted an unbound hook transcript path" >&2
+  exit 1
+fi
+[[ "$(event_count)" -eq $((before + 1)) ]]
+[[ "$(result_bytes)" -eq "$bytes_before" ]]
 
 # Stale/foreign session: a different conversation produces a different
 # declared identity, so it is never mistaken for the active job's replay.
@@ -191,7 +344,79 @@ assert foreign["executor_session"] == "conversation-other-test", "foreign sessio
 assert turn_two["conversation_id"] == first["conversation_id"]
 assert turn_two["invocation_num"] == first["invocation_num"], "fixture must reproduce the per-turn reset"
 assert identity(turn_two) != identity(first), "a new turn must not collide with an earlier one"
+assert turn_two["source_offset"] > first["source_offset"]
 PY
+
+# A consumed transcript checkpoint must cover the entire prefix. Mutating a
+# middle byte beyond both edge windows must fail before a duplicate callback
+# can claim success.
+large_payload='{"transcriptPath":"'"$transcript"'","conversationId":"conversation-agy-test","invocationNum":5}'
+python3 - "$transcript" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "a", encoding="utf-8") as stream:
+    stream.write(json.dumps({
+        "step_index": 10,
+        "source": "MODEL",
+        "type": "PLANNER_RESPONSE",
+        "content": "A" * 150000,
+    }) + "\n")
+PY
+run_adapter "$large_payload" >/dev/null
+[[ "$(wc -c <"$transcript" | tr -d '[:space:]')" -gt 131072 ]]
+checkpoint_event_count=$(event_count)
+checkpoint_result_bytes=$(result_bytes)
+
+# A callback must reject an oversized fresh delta before materializing or
+# appending any transcript/result data. Restore the source boundary afterward
+# so the following checkpoint-integrity case remains independent.
+bounded_source_size=$(wc -c <"$transcript" | tr -d '[:space:]')
+python3 - "$transcript" <<'PY'
+import sys
+
+with open(sys.argv[1], "ab") as stream:
+    stream.write(b"x" * (4 * 1024 * 1024 + 1))
+PY
+if run_adapter "$large_payload" >/dev/null 2>&1; then
+  echo "agy adapter accepted an oversized fresh transcript delta" >&2
+  exit 1
+fi
+[[ "$(event_count)" -eq "$checkpoint_event_count" ]]
+[[ "$(result_bytes)" -eq "$checkpoint_result_bytes" ]]
+truncate -s "$bounded_source_size" "$transcript"
+
+python3 - "$transcript" <<'PY'
+import sys
+
+path = sys.argv[1]
+data = bytearray(open(path, "rb").read())
+offset = len(data) // 2
+assert data[offset:offset + 1] == b"A", (offset, data[offset:offset + 1])
+data[offset:offset + 1] = b"B"
+with open(path, "wb") as stream:
+    stream.write(data)
+PY
+if run_adapter "$large_payload" >/dev/null 2>&1; then
+  echo "agy adapter accepted a middle-byte mutation in a consumed transcript" >&2
+  exit 1
+fi
+[[ "$(event_count)" -eq "$checkpoint_event_count" ]]
+[[ "$(result_bytes)" -eq "$checkpoint_result_bytes" ]]
+
+# Replacing the configured source at the same path must fail closed rather than
+# allowing a fresh-looking file to bypass the persisted launch identity.
+bytes_before=$(result_bytes)
+count_before=$(event_count)
+replacement="$runtime/replacement-transcript.jsonl"
+cp "$transcript" "$replacement"
+mv -f "$replacement" "$transcript"
+if run_adapter "$valid_payload" >/dev/null 2>&1; then
+  echo "agy adapter accepted a replaced transcript source" >&2
+  exit 1
+fi
+[[ "$(event_count)" -eq "$count_before" ]]
+[[ "$(result_bytes)" -eq "$bytes_before" ]]
 
 # 3. Fail-closed inputs: missing/malformed identity fields, non-object payloads,
 #    and an unreadable transcript write no lifecycle event and no result bytes.
@@ -204,8 +429,9 @@ for bad in \
   '{"transcriptPath":"'"$transcript"'","conversationId":"conversation-agy-test"}' \
   '{"transcriptPath":"'"$transcript"'","conversationId":"","invocationNum":3}' \
   '{"transcriptPath":"'"$transcript"'","conversationId":"conversation-agy-test","invocationNum":"three"}' \
-  '{"transcriptPath":"'"$runtime"'/missing-transcript.jsonl","conversationId":"conversation-agy-test","invocationNum":9}'; do
-  if printf '%s\n' "$bad" | env HOME="$runtime" CMUX_AGENT_RUNTIME="$runtime" "$adapter" >/dev/null 2>&1; then
+  '{"transcriptPath":"'"$runtime"'/missing-transcript.jsonl","conversationId":"conversation-agy-test","invocationNum":9}' \
+  '{"transcriptPath":"relative-transcript.jsonl","conversationId":"conversation-agy-test","invocationNum":9}'; do
+  if printf '%s\n' "$bad" | env HOME="$runtime" CMUX_AGENT_RUNTIME="$runtime" CMUX_AGENT_JOB_RUNTIME="$runtime" CMUX_AGENT_JOB_NONCE="$nonce" "$adapter" >/dev/null 2>&1; then
     echo "agy adapter accepted an invalid payload: $bad" >&2
     exit 1
   fi
@@ -239,6 +465,26 @@ source = profile["transcript"]["source"]
 assert source == "${HOME}/agi-result.txt", source
 assert '${HOME}/agi-result.txt' in adapter_text or '$HOME}/agi-result.txt' in adapter_text or 'agi-result.txt' in adapter_text
 assert "CMUX_AGENT_RESULT_FILE" not in adapter_text, "the result path is contract-fixed, not an override"
+mapping = profile["supervisor_mapping"]
+assert mapping["required"] is True
+assert mapping["file"].endswith("/jobs/${job_nonce}/agy.mapping.json")
+assert "CMUX_AGENT_JOB_NONCE" in mapping["exports"]
+assert "mapping source.path" in mapping["source_binding"]
+assert "agy.mapping.json" in adapter_text
+assert "last 400" not in adapter_text
+assert "tail -n 400" not in adapter_text
+assert "fresh_bytes" not in adapter_text
+assert "output_chunks" not in adapter_text
+assert "entries: list" not in adapter_text
+for marker in (
+    "MAX_TRANSCRIPT_DELTA_BYTES",
+    "MAX_TRANSCRIPT_RECORD_BYTES",
+    "MAX_TRANSCRIPT_RECORDS",
+    "MAX_NORMALIZED_OUTPUT_BYTES",
+    "readline",
+    "agy-hook-output.",
+):
+    assert marker in adapter_text, f"bounded streaming safeguard missing: {marker}"
 PY
 must_absent -F 'CMUX_AGENT_RESULT_FILE' "$examples"/* "$readme" "$profiles_doc"
 

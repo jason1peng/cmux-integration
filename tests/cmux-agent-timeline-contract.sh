@@ -47,8 +47,59 @@ record --event response_sent --source supervisor --at-ms 6200
 record --event state_changed --source watcher --at-ms 7000 --state WORKING --reason result-changed
 record --event supervisor_observed --source supervisor --at-ms 7100 --state IDLE --reason follow-up
 record --event completion_gate_passed --source supervisor --at-ms 8000
+record --event capability_requested --source supervisor --at-ms 8050 \
+  --detail request_id=req-1 --detail capability_id=jira-mr-read \
+  --detail capability_kind=local_skill --detail scope_class=local-read-only \
+  --detail status=capability-request-budget-exhausted
 record --event surface_closed --source supervisor --at-ms 8100
 record --event job_finished --source supervisor --at-ms 8200 --outcome success
+
+# Capability events are metadata-only: identity/provenance fields and free-text
+# request details cannot be smuggled through the generic --detail channel.
+if python3 "$timeline_tool" record --timeline "$timeline" --job-nonce "$nonce" \
+  --workspace workspace:99 --surface surface:100 --cwd "$cwd" \
+  --event capability_requested --source supervisor --detail reason=secret >/dev/null 2>&1; then
+  echo 'capability timeline accepted redacted reason detail' >&2
+  exit 1
+fi
+for reserved in source event job_nonce state status execution_mode; do
+  if python3 "$timeline_tool" record --timeline "$timeline" --job-nonce "$nonce" \
+    --workspace workspace:99 --surface surface:100 --cwd "$cwd" \
+    --event state_changed --source supervisor --detail "$reserved=shadow" >/dev/null 2>&1; then
+    echo "timeline accepted reserved detail: $reserved" >&2
+    exit 1
+  fi
+done
+if python3 "$timeline_tool" record --timeline "$timeline" --job-nonce "$nonce" \
+  --workspace workspace:99 --surface surface:100 --cwd "$cwd" \
+  --event capability_requested --source supervisor --status requested --detail status=approved >/dev/null 2>&1; then
+  echo 'timeline accepted duplicate capability status ownership' >&2
+  exit 1
+fi
+for invalid in \
+  'source --event capability_requested' \
+  'status=secret --event capability_requested' \
+  'capability_kind=free-form --event capability_requested' \
+  'query=leak --event capability_requested'; do
+  # Keep the command construction explicit so the negative cases exercise the
+  # parser rather than shell interpolation.
+  if [[ "$invalid" == source* ]]; then
+    if python3 "$timeline_tool" record --timeline "$timeline" --job-nonce "$nonce" \
+      --workspace workspace:99 --surface surface:100 --cwd "$cwd" \
+      --event capability_requested --source watcher >/dev/null 2>&1; then
+      echo 'timeline accepted non-supervisor capability provenance' >&2
+      exit 1
+    fi
+  else
+    detail=${invalid%% --event*}
+    if python3 "$timeline_tool" record --timeline "$timeline" --job-nonce "$nonce" \
+      --workspace workspace:99 --surface surface:100 --cwd "$cwd" \
+      --event capability_requested --source supervisor --detail "$detail" >/dev/null 2>&1; then
+      echo "timeline accepted invalid capability detail: $detail" >&2
+      exit 1
+    fi
+  fi
+done
 
 python3 "$timeline_tool" view --timeline "$timeline" --format markdown > "$runtime/timeline.md"
 grep -Fq '| QUESTION |' "$runtime/timeline.md"
@@ -155,6 +206,22 @@ malformed_timeline="$runtime/malformed.ndjson"
 printf '%s\n' '{"schema_version":1,"job_nonce":"timeline-malformed","source":"watcher","event":"state_changed","at_ms":"not-an-integer"}' > "$malformed_timeline"
 if python3 "$timeline_tool" view --timeline "$malformed_timeline" >/dev/null 2>&1; then
   echo 'timeline viewer accepted malformed timestamps' >&2
+  exit 1
+fi
+
+# A finite JSON number can still overflow the millisecond conversion. It must
+# take the same controlled malformed-input path rather than escaping as a
+# Python traceback from int(infinity).
+overflow_timeline="$runtime/overflow.ndjson"
+printf '%s\n' '{"schema_version":1,"job_nonce":"timeline-overflow","source":"watcher","event":"state_changed","at":1e308}' > "$overflow_timeline"
+overflow_stderr="$runtime/overflow.stderr"
+if python3 "$timeline_tool" view --timeline "$overflow_timeline" > /dev/null 2>"$overflow_stderr"; then
+  echo 'timeline viewer accepted an overflowing finite timestamp' >&2
+  exit 1
+fi
+grep -Fq 'missing or malformed timestamp' "$overflow_stderr"
+if grep -Fq 'Traceback' "$overflow_stderr"; then
+  echo 'timeline viewer leaked an OverflowError traceback' >&2
   exit 1
 fi
 

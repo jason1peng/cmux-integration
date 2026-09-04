@@ -61,6 +61,15 @@ def fail(message: str) -> None:
     raise SystemExit(2)
 
 
+def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            fail(f"duplicate JSON object key: {key}")
+        result[key] = value
+    return result
+
+
 def text(value: Any) -> str | None:
     if isinstance(value, str) and value.strip():
         return value.strip()
@@ -101,16 +110,22 @@ legacy_mapping = job_dir / "mapping.json"
 state_path = job_dir / "cursor-bridge.state.json"
 result_path = job_dir / "cursor.pty-result.ndjson"
 event_path = runtime / "events" / "cursor-transcript-bridge.ndjson"
+event_lock_path = runtime / "events" / ".cmux-agent-event-sink.lock"
 timeline_path = job_dir / "cmux-agent.timeline.ndjson"
 timeline_lock_path = job_dir / ".cmux-agent.timeline.lock"
 lock_path = job_dir / ".cursor-transcript-bridge.lock"
+pending_meta_path = job_dir / ".cursor-bridge.pending.json"
+pending_result_path = job_dir / ".cursor-bridge.pending.result"
+pending_event_path = job_dir / ".cursor-bridge.pending.event"
+pending_state_path = job_dir / ".cursor-bridge.pending.state"
 if not mapping_path.is_file() or legacy_mapping.exists():
     fail("active supervisor mapping is missing or ambiguous")
 try:
-    mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
+    mapping = json.loads(mapping_path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_keys)
 except (OSError, UnicodeError, json.JSONDecodeError) as exc:
     fail(f"active supervisor mapping is unreadable: {exc}")
-if not isinstance(mapping, dict) or mapping.get("schema_version", 1) != 1:
+mapping_version = mapping.get("schema_version") if isinstance(mapping, dict) else None
+if not isinstance(mapping, dict) or not isinstance(mapping_version, int) or isinstance(mapping_version, bool) or mapping_version != 1:
     fail("active supervisor mapping is malformed")
 for key, expected in {
     "job_nonce": nonce,
@@ -152,15 +167,30 @@ exists_at_launch = required_bool(source_map.get("exists_at_launch"), "source.exi
 created_after_launch = required_bool(source_map.get("created_after_launch"), "source.created_after_launch")
 if exists_at_launch == created_after_launch:
     fail("source launch/existence boundary is ambiguous")
-if start_offset == 0 and (exists_at_launch or not created_after_launch):
-    fail("zero source offset requires a source created after launch")
+# An existing source may legitimately be empty at launch, so zero is a valid
+# boundary whenever size_at_launch is zero. A source created after launch must
+# still start at offset zero; an appended boundary must identify an existing
+# source through its launch identity.
 if start_offset > 0 and (not exists_at_launch or created_after_launch):
     fail("appended source boundary must identify an existing source")
-map_path = text(source_map.get("path", source_map.get("transcript_path")))
+raw_map_path = source_map.get("path")
+if (
+    not isinstance(raw_map_path, str)
+    or not raw_map_path
+    or raw_map_path != raw_map_path.strip()
+    or any(ord(char) < 0x20 or ord(char) == 0x7F or char in {"\u2028", "\u2029"} for char in raw_map_path)
+):
+    fail("mapping source.path is missing or malformed")
+try:
+    map_path = os.path.realpath(raw_map_path)
+except (OSError, ValueError):
+    fail("mapping source.path is missing or malformed")
+if not os.path.isabs(raw_map_path) or map_path != raw_map_path:
+    fail("mapping source.path must be a canonical absolute path")
 map_device = source_map.get("device")
 map_inode = source_map.get("inode")
 if exists_at_launch:
-    if map_path is None or map_device is None or map_inode is None:
+    if map_device is None or map_inode is None:
         fail("existing source boundary lacks path/device/inode identity")
     if isinstance(map_device, bool) or not isinstance(map_device, int):
         fail("source.device is malformed")
@@ -173,7 +203,7 @@ else:
     launch_source_mtime = 0
 
 try:
-    event = json.loads(payload_path.read_text(encoding="utf-8"))
+    event = json.loads(payload_path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_keys)
 except (OSError, UnicodeError, json.JSONDecodeError) as exc:
     fail(f"hook payload is malformed: {exc}")
 if not isinstance(event, dict):
@@ -256,6 +286,11 @@ event_path.parent.mkdir(parents=True, exist_ok=True)
 try:
     lock = lock_path.open("a+")
     fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+    # Every bridge instance uses the same sink lock.  This keeps event
+    # deduplication and append/recovery atomic even when multiple jobs share a
+    # runtime directory.
+    event_lock = event_lock_path.open("a+")
+    fcntl.flock(event_lock.fileno(), fcntl.LOCK_EX)
 except OSError as exc:
     fail(f"cannot lock bridge state: {exc}")
 
@@ -264,10 +299,11 @@ def read_state() -> dict[str, Any]:
     if not state_path.exists():
         return {}
     try:
-        value = json.loads(state_path.read_text(encoding="utf-8"))
+        value = json.loads(state_path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_keys)
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         fail(f"bridge state is malformed: {exc}")
-    if not isinstance(value, dict) or value.get("schema_version", 1) != 1:
+    state_version = value.get("schema_version", 1) if isinstance(value, dict) else None
+    if not isinstance(value, dict) or not isinstance(state_version, int) or isinstance(state_version, bool) or state_version != 1:
         fail("bridge state is malformed")
     if value.get("job_nonce") != nonce or value.get("mapping_path") != str(mapping_path):
         fail("bridge state belongs to another job")
@@ -309,13 +345,29 @@ prompt_echoes = prompt_echoes[-32:]
 
 
 def source_from_event() -> str | None:
-    value = event_text("transcript_path", "transcriptPath", "canonical_transcript_path")
-    if value in (None, "null"):
-        value = text(os.environ.get("CURSOR_TRANSCRIPT_PATH"))
-    if not value:
+    value = first(event, "transcript_path", "transcriptPath", "canonical_transcript_path")
+    if value in (None, "null", ""):
+        value = os.environ.get("CURSOR_TRANSCRIPT_PATH")
+    if value in (None, "null", ""):
         return None
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or any(ord(char) < 0x20 or ord(char) == 0x7F or char in {"\u2028", "\u2029"} for char in value)
+    ):
+        fail("hook transcript path is malformed")
     try:
-        path = pathlib.Path(os.path.realpath(value))
+        canonical = os.path.realpath(value)
+    except (OSError, ValueError):
+        fail("hook transcript path is malformed")
+    # The supervisor mapping is the sole source boundary. Do not let a hook
+    # choose a readable transcript after launch, even when that file happens
+    # to exist and passes the freshness checks below.
+    if not os.path.isabs(value) or canonical != value or canonical != map_path:
+        fail("hook transcript path does not match mapped source")
+    path = pathlib.Path(canonical)
+    try:
         if not path.is_file() or not os.access(path, os.R_OK):
             return None
     except OSError:
@@ -414,7 +466,412 @@ def append_timeline(
         print(f"cursor transcript bridge: timeline append unavailable: {exc}", file=sys.stderr)
 
 
-def append_event(path: str | None, size: int | None, records: int, captured: bool) -> None:
+def fsync_directory(path: pathlib.Path) -> None:
+    try:
+        directory_fd = os.open(str(path), os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except OSError as exc:
+        fail(f"cannot persist directory metadata: {exc}")
+
+
+def atomic_write(path: pathlib.Path, payload: bytes, label: str) -> None:
+    """Durably replace one small control file without exposing a partial JSON."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: pathlib.Path | None = None
+    try:
+        temp_fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+        temp_path = pathlib.Path(temp_name)
+        with os.fdopen(temp_fd, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp_path, path)
+        fsync_directory(path.parent)
+    except OSError as exc:
+        fail(f"cannot persist {label}: {exc}")
+    finally:
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
+
+
+def state_bytes(value: dict[str, Any]) -> bytes:
+    return (json.dumps(value, separators=(",", ":")) + "\n").encode("utf-8")
+
+
+def sha256_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def write_state(value: dict[str, Any]) -> None:
+    atomic_write(state_path, state_bytes(value), "bridge state")
+
+
+# Crash injection is deliberately test-only.  It leaves the durable pending
+# transaction in place so a later callback can prove that recovery is
+# idempotent instead of appending a second result/event.
+_TEST_CRASH_AT = next(
+    (
+        os.environ.get(name, "")
+        for name in (
+            "CMUX_AGENT_TEST_CRASH_AT",
+            "CMUX_AGENT_BRIDGE_CRASH_AT",
+            "CMUX_AGENT_TEST_FAILURE_POINT",
+        )
+        if os.environ.get(name, "")
+    ),
+    "",
+).casefold().replace("_", "-")
+
+
+def maybe_test_crash(point: str) -> None:
+    normalized = point.casefold().replace("_", "-")
+    if _TEST_CRASH_AT in {
+        normalized,
+        f"after-{normalized}",
+        f"after-{normalized}-append",
+        f"after-{normalized}-write",
+    }:
+        os._exit(97)
+
+
+def append_bytes(path: pathlib.Path, payload: bytes, label: str) -> None:
+    try:
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            view = memoryview(payload)
+            while view:
+                count = os.write(fd, view)
+                if count <= 0:
+                    raise OSError("short write")
+                view = view[count:]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError as exc:
+        fail(f"cannot append {label}: {exc}")
+
+
+def apply_result_payload(payload: bytes, base_offset: int) -> None:
+    """Apply a staged result exactly once, repairing only an exact partial tail."""
+    try:
+        current_size = result_path.stat().st_size
+    except FileNotFoundError:
+        current_size = 0
+    except OSError as exc:
+        fail(f"cannot stat per-job result: {exc}")
+    if current_size < base_offset:
+        fail("per-job result was truncated before the pending transaction")
+    expected_end = base_offset + len(payload)
+    if current_size > base_offset:
+        try:
+            with result_path.open("rb") as stream:
+                stream.seek(base_offset)
+                existing = stream.read(max(1, min(len(payload) + 1, current_size - base_offset)))
+        except OSError as exc:
+            fail(f"cannot inspect per-job result: {exc}")
+        if existing != payload[: len(existing)]:
+            fail("per-job result contains unexpected bytes after the transaction boundary")
+        if current_size > expected_end:
+            fail("per-job result contains an unexpected later transaction")
+        if current_size < expected_end:
+            try:
+                with result_path.open("r+b") as stream:
+                    stream.truncate(base_offset)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            except OSError as exc:
+                fail(f"cannot repair partial per-job result: {exc}")
+            current_size = base_offset
+    if current_size == expected_end:
+        return
+    if current_size != base_offset:
+        fail("per-job result cursor is inconsistent")
+    append_bytes(result_path, payload, "per-job result")
+
+
+def result_payload_present(base_offset: int, payload_size: int, payload_digest: str) -> bool:
+    try:
+        current_size = result_path.stat().st_size
+    except FileNotFoundError:
+        return payload_size == 0 and base_offset == 0
+    except OSError as exc:
+        fail(f"cannot stat per-job result: {exc}")
+    expected_end = base_offset + payload_size
+    if current_size != expected_end:
+        if current_size < expected_end:
+            return False
+        fail("per-job result has bytes beyond the pending transaction")
+    try:
+        with result_path.open("rb") as stream:
+            stream.seek(base_offset)
+            payload = stream.read(payload_size)
+    except OSError as exc:
+        fail(f"cannot inspect per-job result: {exc}")
+    if sha256_bytes(payload) != payload_digest:
+        fail("per-job result does not match the pending transaction")
+    return True
+
+
+def event_present(
+    event_id: str,
+    pending_line: bytes | None = None,
+    pending_base_offset: int | None = None,
+) -> bool:
+    if not event_path.exists():
+        return False
+    try:
+        with event_path.open("rb") as stream:
+            sink_offset = 0
+            for line_number, line in enumerate(stream, 1):
+                line_start = sink_offset
+                sink_offset += len(line)
+                if not line.endswith(b"\n"):
+                    # A process can die during the single append syscall. If
+                    # the incomplete tail is the exact prefix of this staged
+                    # event, roll it back under the shared sink lock and let
+                    # the normal idempotent append finish it.
+                    if pending_line is not None and pending_base_offset == line_start:
+                        try:
+                            sink_size = event_path.stat().st_size
+                            with event_path.open("rb") as inspect:
+                                inspect.seek(pending_base_offset)
+                                partial = inspect.read(sink_size - pending_base_offset)
+                            if (
+                                pending_base_offset <= sink_size <= pending_base_offset + len(pending_line)
+                                and pending_line.startswith(partial)
+                            ):
+                                with event_path.open("r+b") as repair:
+                                    repair.truncate(pending_base_offset)
+                                    repair.flush()
+                                    os.fsync(repair.fileno())
+                                return False
+                        except OSError as exc:
+                            fail(f"cannot repair incomplete event sink record: {exc}")
+                    fail(f"event sink has an incomplete record at line {line_number}")
+                if not line.strip():
+                    continue
+                try:
+                    value = json.loads(line.decode("utf-8"), object_pairs_hook=reject_duplicate_keys)
+                except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError) as exc:
+                    fail(f"event sink is malformed at line {line_number}: {exc}")
+                if not isinstance(value, dict):
+                    fail(f"event sink record at line {line_number} is not an object")
+                if value.get("event_id") == event_id:
+                    if value.get("job_nonce") != nonce:
+                        fail("event identity is claimed by another job")
+                    return True
+    except OSError as exc:
+        fail(f"cannot inspect event sink: {exc}")
+    return False
+
+
+def append_event_line(
+    event_line: bytes,
+    event_id: str,
+    pending_base_offset: int | None = None,
+) -> bool:
+    if event_present(event_id, event_line, pending_base_offset):
+        return False
+    append_bytes(event_path, event_line, "lifecycle event")
+    return True
+
+
+def source_checkpoint_file(path: pathlib.Path, end: int) -> str:
+    digest = hashlib.sha256(str(end).encode("ascii") + b"\0")
+    remaining = end
+    try:
+        with path.open("rb") as stream:
+            while remaining:
+                chunk = stream.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    fail("source changed while checking pending transaction")
+                digest.update(chunk)
+                remaining -= len(chunk)
+    except OSError as exc:
+        fail(f"cannot read source for pending transaction: {exc}")
+    digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def load_pending() -> dict[str, Any] | None:
+    if not pending_meta_path.exists():
+        return None
+    try:
+        value = json.loads(
+            pending_meta_path.read_text(encoding="utf-8"),
+            object_pairs_hook=reject_duplicate_keys,
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError, RecursionError) as exc:
+        fail(f"pending bridge transaction is malformed: {exc}")
+    if not isinstance(value, dict) or value.get("schema_version") != 1:
+        fail("pending bridge transaction is malformed")
+    if value.get("job_nonce") != nonce or value.get("mapping_path") != str(mapping_path):
+        fail("pending bridge transaction belongs to another job")
+    if value.get("result_path") != str(result_path) or value.get("event_path") != str(event_path):
+        fail("pending bridge transaction paths do not match")
+    return value
+
+
+def load_pending_state(expected_digest: str) -> dict[str, Any]:
+    try:
+        raw = pending_state_path.read_bytes()
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicate_keys)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError, RecursionError) as exc:
+        fail(f"pending bridge state is malformed: {exc}")
+    if not isinstance(value, dict) or value.get("schema_version") != 1:
+        fail("pending bridge state is malformed")
+    if sha256_bytes(raw) != expected_digest:
+        fail("pending bridge state digest does not match")
+    if value.get("job_nonce") != nonce or value.get("mapping_path") != str(mapping_path):
+        fail("pending bridge state belongs to another job")
+    return value
+
+
+def validate_pending_source(meta: dict[str, Any]) -> None:
+    raw_path = meta.get("source_path")
+    end = meta.get("complete_end")
+    source_device = meta.get("source_device")
+    source_inode = meta.get("source_inode")
+    expected_checkpoint = meta.get("source_checkpoint")
+    if (
+        not isinstance(raw_path, str)
+        or raw_path != map_path
+        or not isinstance(end, int)
+        or isinstance(end, bool)
+        or end < 0
+        or not isinstance(source_device, int)
+        or isinstance(source_device, bool)
+        or not isinstance(source_inode, int)
+        or isinstance(source_inode, bool)
+        or not isinstance(expected_checkpoint, str)
+    ):
+        fail("pending bridge source boundary is malformed")
+    source = pathlib.Path(raw_path)
+    try:
+        stat = source.stat()
+    except OSError as exc:
+        fail(f"cannot stat pending transcript source: {exc}")
+    if stat.st_dev != source_device or stat.st_ino != source_inode or stat.st_size < end:
+        fail("pending transcript source identity or size changed")
+    if source_checkpoint_file(source, end) != expected_checkpoint:
+        fail("pending transcript source prefix changed")
+
+
+def remove_pending() -> None:
+    for path in (pending_meta_path, pending_result_path, pending_event_path, pending_state_path):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            fail(f"cannot remove pending bridge transaction: {exc}")
+    fsync_directory(job_dir)
+
+
+def recover_pending(current_state: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Finish or reject a staged transaction before consuming new source bytes."""
+    meta = load_pending()
+    if meta is None:
+        # A crash during staging can leave only disposable files.  They are
+        # never evidence without the durable intent record and are safe to
+        # discard before preparing the next transaction.
+        for path in (pending_result_path, pending_event_path, pending_state_path):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                fail(f"cannot remove abandoned pending file: {exc}")
+        return current_state, False
+
+    validate_pending_source(meta)
+    event_id = meta.get("event_id")
+    base_offset = meta.get("result_base_offset")
+    payload_size = meta.get("result_payload_size")
+    payload_digest = meta.get("result_payload_sha256")
+    event_base_offset = meta.get("event_base_offset")
+    base_state_digest = meta.get("base_state_sha256")
+    if (
+        not isinstance(event_id, str)
+        or not isinstance(event_base_offset, int)
+        or isinstance(event_base_offset, bool)
+        or event_base_offset < 0
+        or not isinstance(base_offset, int)
+        or isinstance(base_offset, bool)
+        or base_offset < 0
+        or not isinstance(payload_size, int)
+        or isinstance(payload_size, bool)
+        or payload_size < 0
+        or not isinstance(payload_digest, str)
+        or not isinstance(base_state_digest, str)
+    ):
+        fail("pending bridge transaction metadata is malformed")
+
+    candidate: dict[str, Any] | None = None
+    if pending_state_path.exists():
+        pending_meta_digest = meta.get("pending_state_sha256")
+        if not isinstance(pending_meta_digest, str):
+            fail("pending bridge state digest is missing")
+        candidate = load_pending_state(pending_meta_digest)
+    committed = candidate is not None and current_state == candidate
+    if candidate is None:
+        pending_state_digest = meta.get("pending_state_sha256")
+        committed = (
+            isinstance(pending_state_digest, str)
+            and sha256_bytes(state_bytes(current_state)) == pending_state_digest
+        )
+    if committed:
+        if not result_payload_present(base_offset, payload_size, payload_digest):
+            fail("committed bridge state has no matching result evidence")
+        pending_event = None
+        if pending_event_path.exists():
+            pending_event = pending_event_path.read_bytes()
+        if not event_present(event_id, pending_event, event_base_offset):
+            if pending_event is None:
+                fail("committed bridge state has no matching lifecycle evidence")
+            event_line = pending_event
+            if sha256_bytes(event_line) != meta.get("event_line_sha256"):
+                fail("pending lifecycle evidence digest does not match")
+            append_event_line(event_line, event_id, event_base_offset)
+        remove_pending()
+        return current_state, True
+
+    if sha256_bytes(state_bytes(current_state)) != base_state_digest:
+        fail("pending bridge transaction does not match durable bridge state")
+    if candidate is None:
+        fail("pending bridge state is missing")
+    if not pending_result_path.exists() or not pending_event_path.exists():
+        fail("pending bridge evidence is incomplete")
+    result_payload = pending_result_path.read_bytes()
+    event_line = pending_event_path.read_bytes()
+    if len(result_payload) != payload_size or sha256_bytes(result_payload) != payload_digest:
+        fail("pending bridge result digest does not match")
+    if sha256_bytes(event_line) != meta.get("event_line_sha256") or not event_line.endswith(b"\n"):
+        fail("pending bridge lifecycle evidence is malformed")
+
+    apply_result_payload(result_payload, base_offset)
+    maybe_test_crash("result")
+    append_event_line(event_line, event_id, event_base_offset)
+    maybe_test_crash("event")
+    maybe_test_crash("before-state")
+    try:
+        os.replace(pending_state_path, state_path)
+        fsync_directory(job_dir)
+    except OSError as exc:
+        fail(f"cannot commit bridge state: {exc}")
+    maybe_test_crash("state")
+    maybe_test_crash("after-state")
+    remove_pending()
+    return candidate, True
+
+
+def build_event(path: str | None, size: int | None, records: int, captured: bool, offset: int) -> tuple[dict[str, Any], float, int]:
     observed_at = time.time()
     observed_monotonic_ns = time.monotonic_ns()
     value = {
@@ -428,7 +885,7 @@ def append_event(path: str | None, size: int | None, records: int, captured: boo
         "session_id": session,
         "status": status,
         "transcript_path": path,
-        "transcript_offset": state.get("last_source_offset", start_offset),
+        "transcript_offset": offset,
         "transcript_size": size,
         "normalized_records": records,
         "path_captured": captured,
@@ -440,32 +897,124 @@ def append_event(path: str | None, size: int | None, records: int, captured: boo
         "surface": surface,
         "cwd": str(cwd),
     }
-    with event_path.open("a", encoding="utf-8") as stream:
-        stream.write(json.dumps(value, separators=(",", ":")) + "\n")
-    append_timeline(
-        "hook_observed",
-        event_at=observed_at,
-        event_monotonic_ns=observed_monotonic_ns,
-        hook_event_name=hook_name,
-        status=status,
-        path_captured=captured,
-        normalized_records=records,
-        failure_latched=state.get("failure_latched") is True,
-    )
+    return value, observed_at, observed_monotonic_ns
 
 
-def write_state(value: dict[str, Any]) -> None:
-    temp_fd, temp_name = tempfile.mkstemp(prefix="cursor-bridge-state.", dir=str(job_dir))
-    os.close(temp_fd)
-    temp_path = pathlib.Path(temp_name)
+def record_event(path: str | None, size: int | None, records: int, captured: bool, offset: int) -> tuple[dict[str, Any], bool]:
+    event, observed_at, observed_monotonic_ns = build_event(path, size, records, captured, offset)
+    event_line = (json.dumps(event, separators=(",", ":")) + "\n").encode("utf-8")
+    appended = append_event_line(event_line, event["event_id"])
+    if appended:
+        append_timeline(
+            "hook_observed",
+            event_at=observed_at,
+            event_monotonic_ns=observed_monotonic_ns,
+            hook_event_name=hook_name,
+            status=status,
+            path_captured=captured,
+            normalized_records=records,
+            failure_latched=state.get("failure_latched") is True,
+        )
+    return event, appended
+
+
+def commit_transaction(
+    result_payload: bytes,
+    event: dict[str, Any],
+    next_state: dict[str, Any],
+    result_base_offset: int,
+    source: pathlib.Path,
+    source_stat: os.stat_result,
+    complete_end: int,
+    source_digest: str,
+) -> tuple[dict[str, Any], bool, float, int]:
+    # The intent record is written only after all staged bytes and the candidate
+    # cursor state are durable.  A crash at any later point is recoverable and
+    # cannot make the source cursor re-emit normalized evidence.
+    for path in (pending_meta_path, pending_result_path, pending_event_path, pending_state_path):
+        if path == pending_meta_path and path.exists():
+            fail("another pending bridge transaction is active")
+        if path != pending_meta_path:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                fail(f"cannot clear stale pending bridge file: {exc}")
+    result_bytes = result_payload
+    event_line = (json.dumps(event, separators=(",", ":")) + "\n").encode("utf-8")
+    candidate_bytes = state_bytes(next_state)
+    atomic_write(pending_result_path, result_bytes, "pending bridge result")
+    atomic_write(pending_event_path, event_line, "pending bridge event")
+    atomic_write(pending_state_path, candidate_bytes, "pending bridge state")
     try:
-        temp_path.write_text(json.dumps(value, separators=(",", ":")) + "\n", encoding="utf-8")
-        os.replace(temp_path, state_path)
-    finally:
-        try:
-            temp_path.unlink()
-        except FileNotFoundError:
-            pass
+        event_base_offset = event_path.stat().st_size
+    except FileNotFoundError:
+        event_base_offset = 0
+    except OSError as exc:
+        fail(f"cannot stat lifecycle event sink: {exc}")
+    metadata = {
+        "schema_version": 1,
+        "job_nonce": nonce,
+        "mapping_path": str(mapping_path),
+        "result_path": str(result_path),
+        "event_path": str(event_path),
+        "source_path": str(source),
+        "source_device": source_stat.st_dev,
+        "source_inode": source_stat.st_ino,
+        "complete_end": complete_end,
+        "source_checkpoint": source_digest,
+        "result_base_offset": result_base_offset,
+        "result_payload_size": len(result_bytes),
+        "result_payload_sha256": sha256_bytes(result_bytes),
+        "event_id": event["event_id"],
+        "event_base_offset": event_base_offset,
+        "event_line_sha256": sha256_bytes(event_line),
+        "pending_state_sha256": sha256_bytes(candidate_bytes),
+        "base_state_sha256": sha256_bytes(state_bytes(state)),
+    }
+    atomic_write(
+        pending_meta_path,
+        (json.dumps(metadata, separators=(",", ":")) + "\n").encode("utf-8"),
+        "pending bridge transaction",
+    )
+    committed_state, _ = recover_pending(state)
+    return committed_state, True, event["observed_at"], event["observed_monotonic_ns"]
+
+
+# Recover evidence staged by an earlier callback before examining the current
+# wakeup.  This is the durable source-cursor boundary: a replay sees the
+# already-committed cursor and cannot append the staged result/event twice.
+state, recovered_transaction = recover_pending(state)
+old_conversation = text(state.get("conversation_id"))
+old_generation = text(state.get("generation_id"))
+old_session = text(state.get("session_id"))
+path_captured = state.get("path_captured") is True
+failure_latched = state.get("failure_latched") is True
+# Revalidate the hook against the recovered state.  A pending callback may
+# have persisted a newer conversation/generation or prompt echo immediately
+# before the process died; never let the current replay overwrite it blindly.
+if old_conversation and conversation and old_conversation != conversation:
+    fail("hook conversation does not match the recovered active job")
+if old_session and session and old_session != session:
+    fail("hook session does not match the recovered active job")
+if old_generation and generation and old_generation != generation:
+    old_family = GENERATION_SUFFIX_RE.fullmatch(old_generation)
+    new_family = GENERATION_SUFFIX_RE.fullmatch(generation)
+    same_family = (old_family.group("base") if old_family else old_generation) == (
+        new_family.group("base") if new_family else generation
+    )
+    if path_captured and not same_family:
+        fail("hook generation does not match the recovered active job")
+prompt_values = state.get("prompt_echoes", [])
+if not isinstance(prompt_values, list) or any(not isinstance(item, str) for item in prompt_values):
+    fail("bridge prompt state is malformed")
+prompt_echoes = [item for item in prompt_values if item]
+for candidate in (mapping.get("prompt_text"), mapping.get("submitted_prompt")):
+    value = text(candidate)
+    if value and value not in prompt_echoes:
+        prompt_echoes.append(value)
+prompt_echoes = prompt_echoes[-32:]
 
 
 # A failed stop/status is terminal for this job.  Keep the latch in the
@@ -493,14 +1042,14 @@ if status_lower in ERROR_STATUSES:
     )
     write_state(failed_state)
     state = failed_state
-    append_event(raw_source, None, 0, bool(path_captured))
+    record_event(raw_source, None, 0, bool(path_captured), state.get("last_source_offset", start_offset))
     raise SystemExit(0)
 
 # Once an error/aborted status has been observed, all later hook callbacks are
 # wakeups only.  Refuse to append result records and leave the failed state
 # visible to the watcher/supervisor.
 if failure_latched:
-    append_event(raw_source, None, 0, bool(path_captured))
+    record_event(raw_source, None, 0, bool(path_captured), state.get("last_source_offset", start_offset))
     fail("job failure was already latched; refusing later transcript content")
 
 if raw_source is None:
@@ -518,7 +1067,7 @@ if raw_source is None:
         }
     )
     write_state(state)
-    append_event(None, None, 0, path_captured)
+    record_event(None, None, 0, path_captured, state.get("last_source_offset", start_offset))
     raise SystemExit(0)
 
 source = pathlib.Path(raw_source)
@@ -528,7 +1077,7 @@ except OSError as exc:
     fail(f"cannot stat transcript source: {exc}")
 if not source.is_file() or not os.access(source, os.R_OK):
     fail("transcript source is missing or unreadable")
-if map_path is not None and os.path.realpath(map_path) != str(source):
+if map_path != str(source):
     fail("hook transcript path does not match mapped source")
 if exists_at_launch:
     if source_stat.st_dev != map_device or source_stat.st_ino != map_inode:
@@ -568,10 +1117,10 @@ except OSError as exc:
 
 
 def checkpoint(data: bytes, end: int) -> str:
-    window = 65536
-    prefix = data[: min(end, window)]
-    suffix = data[max(0, end - window) : end]
-    return hashlib.sha256(str(end).encode() + b"\0" + prefix + b"\0" + suffix).hexdigest()
+    """Hash every consumed source byte, not only its edge windows."""
+    return hashlib.sha256(
+        str(end).encode() + b"\0" + data[:end] + b"\0"
+    ).hexdigest()
 
 
 previous_checkpoint = text(state.get("source_checkpoint"))
@@ -740,7 +1289,7 @@ for start, end, line in lines:
     if not line.strip():
         continue
     try:
-        entry = json.loads(line.decode("utf-8"))
+        entry = json.loads(line.decode("utf-8"), object_pairs_hook=reject_duplicate_keys)
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         fail(f"malformed Cursor transcript JSONL at offset {start}: {exc}")
     if not isinstance(entry, dict):
@@ -792,13 +1341,16 @@ for start, end, entry, role, kind, content in parsed:
     records.append(record)
     seen[entry_id] = end
 
-if records:
-    try:
-        with result_path.open("a", encoding="utf-8") as stream:
-            for record in records:
-                stream.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
-    except OSError as exc:
-        fail(f"cannot append per-job result: {exc}")
+result_payload = b"".join(
+    (json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+    for record in records
+)
+try:
+    result_base_offset = result_path.stat().st_size
+except FileNotFoundError:
+    result_base_offset = 0
+except OSError as exc:
+    fail(f"cannot stat per-job result: {exc}")
 
 new_state = {
     "schema_version": 1,
@@ -827,9 +1379,35 @@ new_state = {
     "normalized_records": nonnegative(state.get("normalized_records"), "state.normalized_records", 0) + len(records),
     "seen_entries": seen,
 }
-write_state(new_state)
-state = new_state
-append_event(str(source), source_stat.st_size, len(records), True)
+event, observed_at, observed_monotonic_ns = build_event(
+    str(source),
+    source_stat.st_size,
+    len(records),
+    True,
+    state.get("last_source_offset", start_offset),
+)
+event_was_new = not event_present(event["event_id"])
+state, _, _, _ = commit_transaction(
+    result_payload,
+    event,
+    new_state,
+    result_base_offset,
+    source,
+    source_stat,
+    complete_end,
+    new_state["source_checkpoint"],
+)
+if event_was_new:
+    append_timeline(
+        "hook_observed",
+        event_at=observed_at,
+        event_monotonic_ns=observed_monotonic_ns,
+        hook_event_name=hook_name,
+        status=status,
+        path_captured=True,
+        normalized_records=len(records),
+        failure_latched=state.get("failure_latched") is True,
+    )
 # Cursor command hooks expect a JSON response.  The shell emits it after
 # successful observation; this Python process only owns bridge state.
 PY

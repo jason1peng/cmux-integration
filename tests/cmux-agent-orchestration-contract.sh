@@ -101,16 +101,52 @@ for policy in \
   'trust/authorization' \
   'always escalate' \
   'executor must remain tool-free' \
-  'routine-command-v1' \
+  'routine-command-v2' \
+  'cmux-agent-command-policy.py' \
   'fifteen seconds of quiet' \
   '15/30/60-second backoff' \
   'REQUIRE_ATTENTION' \
   'deterministic watcher' \
   'exact displayed command' \
   'mandatory escalation categories' \
-  'advisor failure is fail-closed'; do
+  'advisor failure is fail-closed' \
+  'direct_pi' \
+  'supervised_cli_refresh' \
+  'manual_handoff' \
+  'task_payload_sha256' \
+  'capability_policy_version' \
+  'capability_manifest' \
+  '<CMUX_EXECUTOR_BRIEF>' \
+  'byte-for-byte' \
+  'delegated_capability_authority' \
+  'CMX_CAPABILITY_READY' \
+  'CMX_CAPABILITY_REQUEST' \
+  'CMX_CAPABILITY_DECISION' \
+  'capability-request-budget-exhausted' \
+  'task-payload-hash-mismatch' \
+  'task-contract-version-skew' \
+  'local|cached' \
+  'capability_discovered' \
+  'capability_requested' \
+  'capability_decision' \
+  'capability_reminder'; do
   grep -Fq -- "$policy" "$skill"
 done
+# Omitted route metadata must retain the existing direct Pi path rather than
+# selecting a profile or creating an executor surface.
+grep -Fq -- 'If the route field is omitted' "$skill"
+python3 - "$root/tools/cmux-agent-capability-protocol.py" <<'PY'
+import runpy
+import sys
+p = runpy.run_path(sys.argv[1], run_name="orchestration_route_fixture")
+assert p["route_envelope"]() == {"execution_mode": "direct_pi"}
+try:
+    p["route_envelope"](None, selected_profile="cursor")
+except p["ProtocolError"] as exc:
+    assert exc.code == "direct-route-metadata"
+else:
+    raise AssertionError("direct route accepted executor profile metadata")
+PY
 
 # Regression guard: routine pre-job prompts may be dismissed, while only
 # unclassified/consequential prompts escalate. Do not reintroduce an
@@ -197,6 +233,7 @@ grep -Fq -- 'docs/executor-profiles.md' "$root/docs/index.md"
 grep -Fq -- 'tests/executor-profile-contract.sh' "$root/docs/index.md"
 grep -Fq -- 'Cursor lifecycle hooks are notifications only' "$root/docs/index.md"
 grep -Fq -- 'tools/cmux-agent-timeline.py' "$root/docs/index.md"
+grep -Fq -- 'tools/cmux-agent-command-policy.py' "$root/docs/index.md"
 grep -Fq -- 'tests/cmux-agent-timeline-contract.sh' "$root/docs/index.md"
 for profile_contract in \
   'executor_profile' \
