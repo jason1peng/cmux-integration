@@ -304,6 +304,23 @@ def cached_content(value: str) -> str:
     half = MAX_CACHED_CONTENT_BYTES // 2
     return value[:half] + "\n...[content elided by watcher]...\n" + value[-half:]
 
+
+def event_activity_key_for(event: dict[str, Any], raw_line: bytes | None = None) -> str:
+    """Identify one active-job event without using the shared sink's size.
+
+    The lifecycle sink is shared by jobs.  A foreign-job append must not look
+    like fresh activity for this watcher, so the activity key is derived from
+    the active event identity (or its line bytes when an identity is absent),
+    never from the global file size/mtime.
+    """
+    event_id = text(event.get("event_id"))
+    if event_id:
+        return f"id:{event_id}"
+    if raw_line is None:
+        raw_line = json.dumps(event, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return f"digest:{hashlib.sha256(raw_line).hexdigest()}"
+
+
 watch_state = read_json(watcher_state_path)
 if watch_state is None:
     if watcher_state_path.exists():
@@ -581,13 +598,19 @@ def source_snapshot() -> tuple[str, dict[str, Any]]:
     event_cursor = watch_state.get("event_cursor", 0)
     if isinstance(event_cursor, bool) or not isinstance(event_cursor, int) or event_cursor < 0 or event_cursor > event_stat.st_size:
         return "event-truncated", {"reason": "bridge-event-cursor-invalid"}
-    # Keep the activity cursor even when the next event has not completed a
-    # newline yet.  A bridge append is still fresh activity and must reset the
-    # advisor backoff rather than inheriting a stale quiet-period retry.
+    # Keep a byte cursor for the shared sink, but derive activity only from a
+    # correlated active-job event.  A foreign job may append to the same sink
+    # without waking this watcher, resetting its advisor backoff, or making a
+    # settled turn look like WORKING.
     new_event_cursor = event_cursor
     latest_event = watch_state.get("latest_event")
+    active_event_key = watch_state.get("active_event_key")
     if latest_event is not None and not isinstance(latest_event, dict):
         return "event-malformed", {"reason": "bridge-event-state-malformed"}
+    if active_event_key is not None and not isinstance(active_event_key, str):
+        return "event-malformed", {"reason": "bridge-event-state-malformed"}
+    if active_event_key is None and isinstance(latest_event, dict):
+        active_event_key = event_activity_key_for(latest_event)
     if event_stat.st_size > event_cursor:
         event_lines, new_event_cursor, event_pending, _ = appended_lines(event_path, event_cursor)
         try:
@@ -604,6 +627,7 @@ def source_snapshot() -> tuple[str, dict[str, Any]]:
                     return "event-failed", {"reason": "bridge-event-failed"}
                 if text(event.get("transcript_path")):
                     latest_event = event
+                    active_event_key = event_activity_key_for(event, raw_line)
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
             return "event-malformed", {"reason": "bridge-event-malformed"}
         watch_state["event_cursor"] = new_event_cursor
@@ -634,12 +658,14 @@ def source_snapshot() -> tuple[str, dict[str, Any]]:
             "event_inode": event_stat.st_ino,
             "event_size": event_stat.st_size,
             "event_mtime_ns": event_stat.st_mtime_ns,
+            "active_event_key": active_event_key,
         }
     )
-    # Result and bridge-event streams are both wakeup sources.  Include the
-    # event identity/cursor in the activity key so a correlated event-only
-    # append resets advisor backoff just like normalized result activity.
-    event_activity = f"{event_stat.st_dev}:{event_stat.st_ino}:{event_stat.st_size}:{event_stat.st_mtime_ns}:{new_event_cursor}"
+    # Result and correlated bridge-event streams are both wakeup sources. Use
+    # the active event identity rather than the shared sink's size/mtime: an
+    # append for another job must not reset this job's quiet timer or advisor
+    # backoff. A correlated event-only append still changes this key.
+    event_activity = active_event_key or "none"
     activity = f"{result_stat.st_dev}:{result_stat.st_ino}:{result_stat.st_size}:{result_stat.st_mtime_ns}:{new_cursor}|{event_activity}"
     details = {
         "result_size": result_stat.st_size,

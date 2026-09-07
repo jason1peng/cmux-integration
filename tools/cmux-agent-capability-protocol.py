@@ -44,6 +44,16 @@ NON_EXECUTOR_SOURCES = {"brief", "supervisor", "user", "pane", "screen", "label"
 CAPABILITY_KINDS = {"local_skill", "local_read_only_command", "mcp_tool", "network", "external_data"}
 DECISIONS = {"approve", "deny", "ask_user"}
 SCOPE_CLASSES = {"local-read-only", "local-skill", "mcp", "network", "external-data", "write"}
+# Local delegated authority must not be used for credential-bearing or
+# externally effective capabilities merely because they are described as
+# read-only. Keep this vocabulary conservative and shared by approval and
+# recovery checks so both paths fail closed at the same boundary.
+LOCAL_SENSITIVE_SCOPE_RE = re.compile(
+    r"\b(?:network|mcp|external|write|credential(?:s)?|egress|secret(?:s)?|"
+    r"token(?:s)?|passwords?|passwd|api[-_ ]?keys?|private[-_ ]?keys?|"
+    r"auth(?:entication|orization)?)\b",
+    re.IGNORECASE,
+)
 RESULT_MARKERS = ("ERROR", "STUCK", "GOAL_COMPLETE", "NEED_APPROVAL", "QUESTION")
 RESULT_MARKER_RE = re.compile(
     r"^<!-- (?P<marker>GOAL_COMPLETE) -->$|"
@@ -1243,8 +1253,7 @@ def capability_decision(
                 fail("capability-local-effect-invalid")
             if "read" not in request["expected_effect"].casefold() or "local" not in request["expected_effect"].casefold():
                 fail("capability-local-effect-invalid")
-            forbidden_local_terms = r"\b(?:network|mcp|external|write|credential|egress)\b"
-            if re.search(forbidden_local_terms, request["scope"].casefold()) or re.search(forbidden_local_terms, request["expected_effect"].casefold()):
+            if LOCAL_SENSITIVE_SCOPE_RE.search(request["scope"]) or LOCAL_SENSITIVE_SCOPE_RE.search(request["expected_effect"]):
                 fail("capability-local-scope-invalid")
             if kind == "local_read_only_command" and command_verdict != "routine":
                 fail("capability-command-policy-required")
@@ -1401,8 +1410,7 @@ def low_risk_recovery_allowed(
     # A read-only-looking declaration is not enough when either the requested
     # scope or stated effect names an external/network/write boundary.
     # Recovery is narrower than approval and must stay machine-checkable.
-    forbidden_scope_terms = ("network", "mcp", "external", "write", "credential", "egress")
-    if any(term in normalized_scope or term in normalized_effect for term in forbidden_scope_terms):
+    if LOCAL_SENSITIVE_SCOPE_RE.search(normalized_scope) or LOCAL_SENSITIVE_SCOPE_RE.search(normalized_effect):
         return False
     return True
 

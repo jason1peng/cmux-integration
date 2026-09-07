@@ -577,6 +577,38 @@ PY
 env "${watch_env[@]}" CMUX_TEST_PANE_LOG="$pane_log" "$watcher" --once --pane-fallback-seconds 5 --cmux-command "$pane" > "$runtime/watch-repeat.out"
 [[ ! -s "$runtime/watch-repeat.out" ]]
 [[ "$(grep -c '"event":"watcher_started"' "$timeline_path")" -eq 1 ]]
+# The bridge lifecycle sink is shared across jobs. A foreign-job append must
+# advance only the shared byte cursor; it must not reset this job's quiet
+# timer, advisor backoff, or watcher state.
+python3 - "$runtime/events/cursor-transcript-bridge.ndjson" <<'PY'
+import json, sys
+with open(sys.argv[1], "a", encoding="utf-8") as stream:
+    stream.write(json.dumps({
+        "schema_version": 1,
+        "hook_event_name": "afterAgentThought",
+        "hook": "cursor-transcript-bridge",
+        "event_id": "foreign-watcher-event",
+        "job_nonce": "foreign-job",
+        "executor_session": "foreign-session",
+        "conversation_id": "foreign-conversation",
+        "generation_id": "foreign-generation",
+        "session_id": "foreign-session",
+        "transcript_path": "/tmp/foreign-transcript.jsonl",
+        "status": "success",
+    }, separators=(",", ":")) + "\n")
+PY
+foreign_activity_before=$(python3 - "$watch_job/cursor-watcher.state.json" <<'PY'
+import json, sys
+print(json.load(open(sys.argv[1], encoding="utf-8")).get("last_activity_key"))
+PY
+)
+env "${watch_env[@]}" CMUX_TEST_PANE_LOG="$pane_log" "$watcher" --once --pane-fallback-seconds 60 --cmux-command "$pane" > "$runtime/watch-foreign.out"
+[[ ! -s "$runtime/watch-foreign.out" ]]
+python3 - "$watch_job/cursor-watcher.state.json" "$foreign_activity_before" <<'PY'
+import json, sys
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+assert state["last_activity_key"] == sys.argv[2]
+PY
 
 # A quiet source is ambiguous: emit REQUIRE_ATTENTION first, with bounded
 # pane evidence, and let the LLM/advisor interpret it.  Pane state remains a
@@ -793,11 +825,9 @@ s = json.loads(p.read_text(encoding="utf-8"))
 job = p.parent
 runtime = job.parent.parent
 result = os.stat(job / "cursor.pty-result.ndjson")
-event = os.stat(runtime / "events" / "cursor-transcript-bridge.ndjson")
-activity = (
-    f"{result.st_dev}:{result.st_ino}:{result.st_size}:{result.st_mtime_ns}:{s['result_cursor']}|"
-    f"{event.st_dev}:{event.st_ino}:{event.st_size}:{event.st_mtime_ns}:{s['event_cursor']}"
-)
+active_event_key = s.get("active_event_key")
+assert isinstance(active_event_key, str) and active_event_key
+activity = f"{result.st_dev}:{result.st_ino}:{result.st_size}:{result.st_mtime_ns}:{s['result_cursor']}|{active_event_key}"
 s["last_activity_key"] = activity
 s["last_activity_at"] = 0
 s["last_state"] = "REQUIRE_ATTENTION"

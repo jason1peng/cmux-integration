@@ -333,6 +333,15 @@ except ProtocolError as exc:
     assert exc.code == "capability-local-scope-invalid"
 else:
     raise AssertionError("local authority approved an egress-shaped scope")
+# Credential-shaped local wording is not low-risk merely because the request
+# declares no network and read-only effects. It must remain parent/user-bound.
+for sensitive_scope in ("local secret cache", "local token metadata", "local password inventory", "local private-key metadata"):
+    try:
+        decision_fn({**expanded, "request_id": "req-sensitive-" + sensitive_scope.split()[1], "scope": sensitive_scope}, job_nonce="nonce-006", executor_identity="cursor-session", generation="gen-006", decision="approve", granted_scope=sensitive_scope, expires_at=150, transcript_cursor=42, now=100, job_deadline=200, manifest=manifest)
+    except ProtocolError as exc:
+        assert exc.code == "capability-local-scope-invalid", (sensitive_scope, exc.code)
+    else:
+        raise AssertionError("local authority approved credential-shaped scope: " + sensitive_scope)
 local_command = {**local_request, "request_id": "req-command-1", "kind": "local_read_only_command", "name": "cat-readme"}
 try:
     decision_fn(local_command, job_nonce="nonce-006", executor_identity="cursor-session", generation="gen-006", decision="approve", granted_scope=local_command["scope"], expires_at=150, transcript_cursor=42, now=100, job_deadline=200, manifest=manifest)
@@ -410,6 +419,8 @@ assert recovery_fn(budget, {**local_request, "side_effects": "none"}, command_ve
 assert recovery_fn(budget, {**local_request, "side_effects": "write", "network": True}, command_verdict="routine", execution_evidence=False) == "capability-violation-stop"
 assert not p["low_risk_recovery_allowed"]({**local_request, "kind": "local_read_only_command", "name": "cat", "side_effects": "none"}, command_verdict=None, execution_evidence=False)
 assert not p["low_risk_recovery_allowed"]({**local_request, "expected_effect": "read-only local lookup with network disabled"}, command_verdict="routine", execution_evidence=False), "recovery must reject egress-shaped effect text"
+for sensitive_scope in ("local secret cache", "local token metadata", "local password inventory", "local private-key metadata"):
+    assert not p["low_risk_recovery_allowed"]({**local_request, "scope": sensitive_scope}, command_verdict="routine", execution_evidence=False), sensitive_scope
 
 # Supervised hash mismatches fail closed. Manual imports are always labeled
 # manual/unsupervised and cannot satisfy a supervised completion gate.
