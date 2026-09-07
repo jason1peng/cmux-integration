@@ -28,7 +28,7 @@
   "probes": {
     "ready": {
       "kind": "screen",
-      "description": "Cursor interactive ready prompt accepting a new message"
+      "description": "Cursor identity/header plus interactive input-ready prompt accepting a new message; a generic shell prompt, launch error, or pasted-but-unsubmitted input is not ready"
     },
     "idle": {
       "kind": "screen",

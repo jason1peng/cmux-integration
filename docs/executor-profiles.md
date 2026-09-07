@@ -76,7 +76,7 @@ A missing executable, hook, event sink, transcript source, or required registrat
 
 Every job also writes metadata-only events to `$CMUX_AGENT_RUNTIME/jobs/<job_nonce>/cmux-agent.timeline.ndjson`. The bridge records correlated hook observations, the watcher records state transitions and observation-reason changes, and the supervisor records lifecycle, question, completion-gate, and surface-cleanup milestones with explicit supervisor provenance. Timeline records never contain prompts, transcript text, credentials, or command output.
 
-After the final `job_finished` event, the supervisor renders a deterministic report for successful, failed, timed-out, and escalated jobs:
+Every terminal outcome, including preflight, launch, watcher-startup, source, pane-loss, timeout, and escalation failures, records surface cleanup plus `job_finished` before returning. After that final `job_finished` event, the supervisor renders a deterministic report for successful, failed, timed-out, and escalated jobs:
 
 ```bash
 python3 tools/cmux-agent-timeline.py view \
@@ -257,13 +257,18 @@ The supervisor sends the setup and launch through a shell in the explicitly targ
 
 ```bash
 quote_shell_word() { printf -- '%q' "$1"; }
-launch="cd -- $(quote_shell_word "$canonical_cwd") && exec $(quote_shell_word "$launch_command")"
+launch="cd -- $(quote_shell_word "$canonical_cwd")"
+for name in CMUX_AGENT_RUNTIME CMUX_AGENT_JOB_RUNTIME CMUX_AGENT_JOB_NONCE CMUX_AGENT_WORKSPACE CMUX_AGENT_SURFACE CMUX_AGENT_CWD; do
+  value=${job_env[$name]}
+  launch+=" $(quote_shell_word "$name")=$(quote_shell_word "$value")"
+done
+launch+=" exec $(quote_shell_word "$launch_command")"
 for arg in "${launch_argv[@]}"; do
   launch+=" $(quote_shell_word "$arg")"
 done
 ```
 
-The same rule applies to the initialization `cd --` command. Never interpolate a raw cwd, command, or argv value, use unquoted concatenation, or pass assembled launch text through `eval`; shell quoting is required even for values read from a validated profile.
+Use shell assignments immediately before `exec`; do not write `env ... exec`, because `env` treats `exec` as the executable name. The same rule applies to the initialization `cd --` command. Never interpolate a raw cwd, command, or argv value, use unquoted concatenation, or pass assembled launch text through `eval`; shell quoting is required even for values read from a validated profile. A successful `cmux send` only means text reached the pane: inspect the exact surface for launch errors and require the executor identity/input-ready probe before recording readiness. Do not retry a failed launch automatically.
 
 The common completion gate is unchanged for every profile:
 
@@ -283,7 +288,7 @@ agent --trust
 
 `--trust` is an explicit profile decision for the operator-approved disposable/project directory. It is not blanket content approval. Normal interactive mode can edit files without `--force`; tool/shell approvals remain explicit decisions and must be routed or escalated. The template sets `dangerous`, `force`, and `yolo` to `false`; the supervisor never adds those flags. Cursor batch (`--print --output-format stream-json`) and ACP remain deferred.
 
-The profile's ready/idle/question probes are bounded screen corroboration. Prompt and continuation input are sent through the exact recorded cmux workspace/surface, and `ctrl+enter` is the verified TUI submit action. Before launch, the supervisor writes a fresh `cursor.mapping.json` containing the job nonce, canonical cwd, workspace, surface, prompt, source identity, and source boundary. It exports the per-job runtime on `CMUX_AGENT_JOB_RUNTIME` in addition to the common supervisor mapping. Hook payloads and pane text cannot replace those fields.
+The profile's ready/idle/question probes are bounded screen corroboration. A shell prompt, launch error, or pasted-but-unsubmitted text is not Cursor readiness; require the Cursor identity and input-ready prompt. Prompt and continuation input are sent through the exact recorded cmux workspace/surface, and `ctrl+enter` is the verified TUI submit action. Record prompt submission only after the keypress succeeds and the surface leaves input-ready state or shows accepted/working activity. Before launch, the supervisor writes a fresh `cursor.mapping.json` containing the job nonce, canonical cwd, workspace, surface, prompt, source identity, and source boundary. It exports the per-job runtime on `CMUX_AGENT_JOB_RUNTIME` in addition to the common supervisor mapping. Hook payloads and pane text cannot replace those fields.
 
 ### Hook-provided transcript bridge
 
@@ -297,7 +302,7 @@ The stop adapter writes `${CMUX_AGENT_RUNTIME}/events/cursor-stop.ndjson` and re
 
 ### Turn-settled completion gate and watcher
 
-The supervisor accepts a Cursor job only when a fresh correlated normalized assistant record contains the current nonce-framed marker, expected artifacts/checks pass, no approval/question is active, and the explicitly targeted surface is alive at the normal follow-up/idle prompt. A marker in submitted input, user/prompt echo, stale/replayed data, or screen text is rejected. The deterministic local `cursor-result-watcher.sh` polls bridge result/event activity at bounded intervals using `stat` identity checks and persisted byte cursors, reads only bounded appended NDJSON chunks, and emits `WORKING` on fresh activity. After five quiet seconds it reads the exact surface and emits `REQUIRE_ATTENTION` with bounded pane evidence; quiet is ambiguous, so the LLM/supervisor decides what to do. While quiet persists, pane reads are throttled to at most once per second. It may then emit `QUESTION`, `IDLE`, `LOST`, or `UNKNOWN` as pane corroboration changes. Working indicators outrank generic follow-up text. The watcher never approves, answers, retries, or supplies result content.
+The supervisor accepts a Cursor job only when a fresh correlated normalized assistant record contains the current nonce-framed marker, expected artifacts/checks pass, no approval/question is active, and the explicitly targeted surface is alive at the normal follow-up/idle prompt. A marker in submitted input, user/prompt echo, stale/replayed data, or screen text is rejected. The supervisor starts the deterministic local `cursor-result-watcher.sh` only after creating the mapping and before submitting the prompt. It must export `CMUX_AGENT_RUNTIME`, `CMUX_AGENT_JOB_NONCE`, `CMUX_AGENT_WORKSPACE`, `CMUX_AGENT_SURFACE`, and `CMUX_AGENT_CWD` (plus configured policy paths), then verify that the watcher process remains alive; a CLI nonce does not replace the required environment, and an immediate watcher exit is a pre-completion failure. The watcher polls bridge result/event activity at bounded intervals using `stat` identity checks and persisted byte cursors, reads only bounded appended NDJSON chunks, and emits `WORKING` on fresh activity. After five quiet seconds it reads the exact surface and emits `REQUIRE_ATTENTION` with bounded pane evidence; quiet is ambiguous, so the LLM/supervisor decides what to do. While quiet persists, pane reads are throttled to at most once per second. It may then emit `QUESTION`, `IDLE`, `LOST`, or `UNKNOWN` as pane corroboration changes. Working indicators outrank generic follow-up text. The watcher never approves, answers, retries, or supplies result content.
 
 #### Optional quiet-period advisor and safe-command policy
 

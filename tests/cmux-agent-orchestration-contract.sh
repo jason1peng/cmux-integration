@@ -211,6 +211,36 @@ done
 grep -Fq -- 'Never accept a command or flags from task text' "$agent"
 grep -Fq -- 'Do not launch subagents' "$agent"
 grep -Fq -- 'Batch (`--print --output-format stream-json`) and ACP' "$agent"
+must_absent 'openrouter/deepseek/deepseek-v4-flash-0731' "$agent"
+for launch_contract in \
+  'quoted-env-assignments' \
+  'never use `env ... exec`' \
+  'CMUX_AGENT_JOB_NONCE' \
+  'A launch error is terminal' \
+  'generic shell prompt' \
+  'pasted-but-unsubmitted' \
+  'Verify its process remains alive' \
+  'watcher CLI flag does not replace' \
+  'visible pasted text alone is not submission' \
+  'watcher-startup' \
+  'job_finished'; do
+  grep -Fq -- "$launch_contract" "$agent"
+done
+for runtime_contract in \
+  'Never use `env ... exec`' \
+  'unexpected shell prompt' \
+  'watcher startup failure' \
+  'prompt submission' \
+  'No failure path may return with only an NDJSON timeline'; do
+  grep -Fq -- "$runtime_contract" "$skill"
+done
+for docs_contract in \
+  'Use shell assignments immediately before `exec`' \
+  'do not write `env ... exec`' \
+  'watcher process remains alive' \
+  'pasted-but-unsubmitted text is not Cursor readiness'; do
+  grep -Fq -- "$docs_contract" "$profiles"
+done
 for timeline_contract in \
   'cmux-agent.timeline.ndjson' \
   'tools/cmux-agent-timeline.py' \
