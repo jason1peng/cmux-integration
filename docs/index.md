@@ -12,6 +12,18 @@ Before planning or implementation:
 4. Read the root AI instruction files when working as an agent.
 5. Run the contract test before submitting changes.
 
+## Quick setup
+
+The checked-in `adapters/` files remain copyable source; setup is explicit and never auto-installs an executor or infers one from `$PATH`. Direct-Pi prompting remains the default. From a checkout, inspect the plan and then apply the selected profile:
+
+```bash
+bash tools/cmux-agent-setup.sh --profile cursor
+bash tools/cmux-agent-setup.sh --profile cursor --apply
+bash tools/cmux-agent-setup.sh --profile both --check
+```
+
+`--apply` confirms the exact changes, `--check` is read-only, `--advisor` and `--with-pi` are explicit opt-ins, and no shell startup file or `CMUX_AGENT_EXECUTOR` is changed. Selected path overrides are materialized in the installed profile; checked-in sources remain portable templates. The detailed setup tables in `README.md` and `docs/executor-profiles.md` remain authoritative.
+
 ## Documentation SSOT
 
 - Change principles: `docs/principles.md`
@@ -28,6 +40,7 @@ Before planning or implementation:
 - `.pi/agents/` — project-scoped pi-subagents definitions. The generic supervisor is at `.pi/agents/cmux-agent.md` (aliases: `agy`, `cmux-agent-supervisor`).
 - `tools/cmux-agent-timeline.py` — append and render metadata-only per-job timelines, including deterministic HTML graphs.
 - `tools/cmux-agent-command-policy.py` — the single non-executing v2 validator for bounded local read-only command recommendations, including Git helper/configuration boundary checks.
+- `tools/cmux-agent-setup.sh` — explicit plan/apply/check setup for selected Cursor and agy profile templates, additive hook merging, and optional Pi resources.
 - `tools/cmux-agent-capability-protocol.py` — validate the CLI-neutral capability/task protocol and one hashed task core shared by direct, supervised, and manual routes.
 - `tests/` — contract and regression checks. The orchestration contract test is `tests/cmux-agent-orchestration-contract.sh`; timeline behavior is covered by `tests/cmux-agent-timeline-contract.sh`.
 
@@ -73,12 +86,14 @@ flowchart LR
 | `adapters/agy/` | Copyable agy profile, wrapper, PostInvocation adapter/registration, and explicit-confirmation installer. Install selected files explicitly to machine-local destinations; these are not machine-local configuration. |
 | `tools/cmux-agent-timeline.py` | Append and render metadata-only per-job timelines with Markdown, JSON, and deterministic responsive HTML/SVG graph views, watcher state bands, observation milestones, latency summaries, and supervisor-event provenance. |
 | `tools/cmux-agent-command-policy.py` | Single non-executing v2 validator for bounded local read-only command recommendations and Git helper/configuration boundary checks. |
+| `tools/cmux-agent-setup.sh` | Explicit plan/apply/check setup for selected Cursor and agy profile templates, additive hook merging, and optional Pi resources. |
 | `tools/cmux-agent-capability-protocol.py` | Canonical manifest/task-core bytes and hashes, route envelopes, capability readiness/request/decision parsing, bounded recovery, and result evidence labels. |
 | `tests/cmux-agent-command-policy-contract.sh` | Bounded command-policy cases for read-only Git/subcommand, shell-expansion, scope, symlink, stdin, and network/write rejection. |
 | `tests/cmux-agent-capability-protocol-contract.sh` | Offline capability protocol, route parity, hash binding, authorization, budget, recovery, replay, and evidence-label checks. |
 | `tests/cmux-agent-timeline-contract.sh` | Timeline record/view, deterministic HTML graph/tooltips, watcher state-band and supervisor-event provenance, boundary-safe layout, ordering, metrics, and malformed-input checks. |
 | `tests/agy-executor-contract.sh` | Focused contract checks for the portable agy wrapper, PostInvocation lifecycle adapter, registration fragment, installer merge, and no-secret/no-private-path bounds. |
 | `tests/cursor-transcript-bridge-contract.sh` | Deterministic Cursor hook path discovery, JSONL normalization/freshness, marker provenance, lifecycle failure, watcher state-change, pane fallback, classification, advisor policy, quiet backoff, and reset checks. |
+| `tests/cmux-agent-setup-contract.sh` | Disposable setup plan/apply/check, profile selection, idempotency, additive Cursor hooks, advisor/Pi opt-ins, agy delegation, rejection, and leakage bounds. |
 | `tests/cmux-agent-orchestration-contract.sh` | Static common-protocol, generic-supervisor, alias, pane-targeting, cwd, nonce, and no-screen-only-marker validation. |
 | `tests/executor-profile-contract.sh` | Focused JSON-template, capability-adapter, and profile-specific lifecycle/permission contract validation. |
 
@@ -91,7 +106,7 @@ For orchestration changes:
 3. Keep all executor jobs in the reusable `cmux-agent` workspace, always create a new pane/surface per job, and label that surface with the authoritative project name plus an ordinal such as `cmux-integration (1)` or `cmux-integration (2)`.
 4. Resolve only an explicit machine-local executor profile or `CMUX_AGENT_EXECUTOR`; never auto-detect a CLI, accept a launch command from task text, silently enable force/yolo, or modify user hooks.
 5. Preserve the agy compatibility profile's wrapper, `PostInvocation` hook, transcript, and marker contract; use the generic supervisor aliases for compatibility.
-6. Run `bash tests/cmux-agent-command-policy-contract.sh`, `bash tests/cmux-agent-capability-protocol-contract.sh`, `bash tests/cmux-agent-orchestration-contract.sh`, `bash tests/executor-profile-contract.sh`, `bash tests/cmux-agent-timeline-contract.sh`, and `git diff --check`.
+6. Run `bash tests/cmux-agent-command-policy-contract.sh`, `bash tests/cmux-agent-capability-protocol-contract.sh`, `bash tests/cmux-agent-orchestration-contract.sh`, `bash tests/executor-profile-contract.sh`, `bash tests/agy-executor-contract.sh`, `bash tests/cmux-agent-timeline-contract.sh`, `bash tests/cursor-transcript-bridge-contract.sh`, `bash tests/cmux-agent-setup-contract.sh`, `bash -n tools/cmux-agent-setup.sh tests/*.sh adapters/cursor/*.sh adapters/agy/*.sh`, and `git diff --check`.
 7. For live validation, use a disposable directory and cmux pane; never test destructive or spending actions. Cursor lifecycle hooks are notifications only: the interactive bridge uses them as asynchronous wakeups/path observations, while the deterministic watcher compares bounded cursors, emits `REQUIRE_ATTENTION` after five quiet seconds, and leaves the LLM/supervisor to interpret ambiguous quiet. The hook-provided transcript must still pass fresh normalization, artifact/check, correlation/status, and supervisor-owned turn-settled idle corroboration. The optional advisor is bounded by the 15-second quiet trigger, 15/30/60-second capped backoff, exact read-only command policy, and fail-closed escalation categories.
 8. Record new verification or runtime limitations, including pending agy validation or deferred batch/ACP adapters, in the relevant change documentation.
 

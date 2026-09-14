@@ -8,6 +8,19 @@ The profile is the only place that selects an executable, permission/trust mode,
 
 Both executor options use the same five-step setup:
 
+### Quick setup command
+
+The checked-in `adapters/` directory remains copyable source and is not auto-installed. Direct-Pi prompting remains the default; setup never infers a profile from installed executables, sets `CMUX_AGENT_EXECUTOR`, or edits shell startup files. From a checkout, inspect the exact plan and then apply one explicit selection:
+
+```bash
+bash tools/cmux-agent-setup.sh --profile cursor
+bash tools/cmux-agent-setup.sh --profile cursor --apply
+bash tools/cmux-agent-setup.sh --profile agy --apply
+bash tools/cmux-agent-setup.sh --profile both --check
+```
+
+`--apply` requires confirmation after the plan and asks before replacing differing files. `--check` is read-only and exits non-zero when required files or hook registrations are missing/stale. Add `--advisor` to install the optional Cursor advisor plus the authoritative command-policy helper, and add `--with-pi` to install the global Pi agent/skill resources using the documented `skillPath` rewrite. The command honors the documented machine-local path overrides and materializes them in the installed profile, while leaving checked-in templates portable. It creates profile/runtime directories only during `--apply`, and never creates credentials, a result placeholder, or per-job runtime state. The detailed profile tables and lifecycle contracts below remain authoritative.
+
 1. Create the machine-local profile/runtime directories.
 2. Copy the selected profile template as `<profile-id>.json`.
 3. Configure that executor's lifecycle hook and result source.
@@ -298,7 +311,7 @@ The bridge reads only the hook-provided JSONL source after the supervisor bounda
 
 ### Optional Cursor stop hook and response wakeups
 
-The stop adapter writes `${CMUX_AGENT_RUNTIME}/events/cursor-stop.ndjson` and returns `{}` so Cursor command-hook execution remains valid. `stop` and `afterAgentResponse` are optional wakeups: an accepted stop status can trigger validation, `error` or `aborted` fails closed, and missing stop never downgrades transcript validation. The existing Agoda monitoring hook is preserved; registration is an explicit operator action, and this repository never writes user hooks, credentials, profiles, transcripts, or runtime state.
+The stop adapter writes `${CMUX_AGENT_RUNTIME}/events/cursor-stop.ndjson` and returns `{}` so Cursor command-hook execution remains valid. `stop` and `afterAgentResponse` are optional wakeups: an accepted stop status can trigger validation, `error` or `aborted` fails closed, and missing stop never downgrades transcript validation. The existing Agoda monitoring hook is preserved; hook/profile installation is an explicit `tools/cmux-agent-setup.sh --apply` or operator action, and this repository never writes user hooks, credentials, profiles, transcripts, or runtime state implicitly.
 
 ### Turn-settled completion gate and watcher
 
@@ -377,7 +390,8 @@ bash tests/cmux-agent-orchestration-contract.sh
 bash tests/executor-profile-contract.sh
 bash tests/agy-executor-contract.sh
 bash tests/cursor-transcript-bridge-contract.sh
-bash -n tests/*.sh adapters/cursor/*.sh adapters/agy/*.sh
+bash tests/cmux-agent-setup-contract.sh
+bash -n tools/cmux-agent-setup.sh tests/*.sh adapters/cursor/*.sh adapters/agy/*.sh
 python3 -m json.tool <each changed JSON file>
 git diff --check
 ```

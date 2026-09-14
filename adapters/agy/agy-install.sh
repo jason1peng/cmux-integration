@@ -28,6 +28,10 @@ source_wrapper="$adapter_dir/agy-with-permissions.sh"
 source_adapter="$adapter_dir/agy-hook-notify.sh"
 source_registration="$adapter_dir/agy-result-hook.hooks.json"
 
+file_mode() {
+  stat -f '%Lp' -- "$1" 2>/dev/null || stat -c '%a' -- "$1"
+}
+
 for required in "$source_wrapper" "$source_adapter" "$source_registration"; do
   if [[ ! -s "$required" ]]; then
     echo "Missing or empty template: $required" >&2
@@ -62,6 +66,18 @@ install_file() {
   local target="$1"
   local source="$2"
   local label="$3"
+  if [[ -L "$target" ]]; then
+    echo "Refusing unsafe symlink target: $target" >&2
+    return 1
+  fi
+  if [[ -e "$target" && ! -f "$target" ]]; then
+    echo "Refusing non-file target: $target" >&2
+    return 1
+  fi
+  if [[ -f "$target" ]] && cmp -s -- "$source" "$target" && [[ "$(file_mode "$source")" == "$(file_mode "$target")" ]]; then
+    echo "Already up to date: $label: $target"
+    return 0
+  fi
   if [[ -e "$target" ]]; then
     echo "File already exists: $target"
     echo "Replace it with the portable template? (This removes its current content.) (y/N)"
@@ -71,8 +87,13 @@ install_file() {
       return 0
     fi
   fi
-  cp -- "$source" "$target"
-  chmod 755 "$target"
+  local temporary
+  temporary=$(mktemp "${target}.tmp.XXXXXX")
+  trap 'rm -f -- "$temporary"' RETURN
+  cp -- "$source" "$temporary"
+  chmod 755 "$temporary"
+  mv -f -- "$temporary" "$target"
+  trap - RETURN
   echo "Installed $label: $target"
 }
 
@@ -81,6 +102,10 @@ install_file "$adapter_target" "$source_adapter" "hook adapter"
 
 # Merge the PostInvocation registration into the existing agy hooks config.
 merge_or_write_hooks() {
+  if [[ -L "$hooks_config" ]]; then
+    echo "Refusing unsafe symlink hooks config: $hooks_config" >&2
+    return 1
+  fi
   if [[ -e "$hooks_config" ]]; then
     echo
     echo "Merging the agy-Result-hook PostInvocation registration into: $hooks_config"

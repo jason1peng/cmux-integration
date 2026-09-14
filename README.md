@@ -11,6 +11,35 @@ The supervisor is the generic Pi agent at [`.pi/agents/cmux-agent.md`](.pi/agent
 
 > **Important:** the alias does not choose the CLI. The explicit executor profile chooses the CLI.
 
+## Quick setup (explicit and safe)
+
+`adapters/` remains copyable source; this repository does not auto-install an executor, infer a profile from installed executables, set `CMUX_AGENT_EXECUTOR`, or edit shell startup files. Direct-Pi prompting remains the default. From a checkout, first inspect a read-only plan, then apply only the explicitly selected profile:
+
+```bash
+bash tools/cmux-agent-setup.sh --profile cursor
+bash tools/cmux-agent-setup.sh --profile cursor --apply
+```
+
+For the optional bounded Cursor advisor and global Pi agent/skill resources, opt in explicitly:
+
+```bash
+bash tools/cmux-agent-setup.sh --profile cursor --apply --advisor --with-pi
+```
+
+For agy, the command shows the plan and delegates wrapper/adapter/hook registration to the existing explicit-confirmation installer:
+
+```bash
+bash tools/cmux-agent-setup.sh --profile agy --apply
+```
+
+Use `--profile both` only when both integrations are intentionally wanted. `--check` is read-only and returns non-zero until the selected setup is ready:
+
+```bash
+bash tools/cmux-agent-setup.sh --profile both --check
+```
+
+The setup command uses the documented `CMUX_AGENT_HOME`, `CMUX_AGENT_CONFIG`, `CMUX_AGENT_PROFILE_DIR`, `CMUX_AGENT_RUNTIME`, `CMUX_AGENT_BIN`, `CMUX_AGENT_HOOKS_CONFIG`, and `CMUX_AGENT_CURSOR_HOOKS_CONFIG` overrides for disposable tests. The installed profile is materialized to those selected destinations (including adapter/bin and hook-config overrides), while checked-in adapter sources remain portable templates. It creates profile/runtime directories only with `--apply`, merges Cursor user hooks additively, never creates credentials or per-job state, and asks before replacing differing files. The detailed installation tables below remain authoritative.
+
 ## How it works
 
 ```text
@@ -55,7 +84,7 @@ The supervisor renders this report after `job_finished` for successful, failed, 
 ## What this repository does not do
 
 - It does not auto-detect whether Cursor or agy is installed.
-- It does not install or modify user hooks, credentials, profiles, or transcripts.
+- It does not implicitly install or modify user hooks, credentials, profiles, or transcripts; the explicit `tools/cmux-agent-setup.sh --apply` path installs selected profile files and additively merges selected hooks only after confirmation.
 - It does not silently add `--force` or `--yolo`.
 - It does not install the agy wrapper or agy-specific hook files implicitly; reviewed templates are supplied for explicit operator installation.
 - Cursor batch (`--print --output-format stream-json`) and ACP remain deferred; interactive Cursor is the supported Cursor transport in this slice.
@@ -165,7 +194,7 @@ agy support is compatibility support for an existing agy installation. This repo
 
 The supervisor also persists `jobs/<job_nonce>/agy.mapping.json` before launch with the canonical raw transcript path, source/result identities, and byte boundaries. The adapter rejects a hook-supplied `transcriptPath` that is not exactly the mapped canonical source and never re-emits pre-launch transcript bytes.
 
-The templates are placed locally by the operator (or by `agy-install.sh` with explicit confirmation); this repository never silently creates, copies, or modifies user hooks. Product-specific items (the agy CLI, credentials, and working hook registration) remain the local agy installation. If any agy prerequisite is absent, leave agy unselected and use Cursor; the supervisor fails closed rather than falling back to screen polling.
+The templates are placed locally by the operator, the unified setup command, or `agy-install.sh`, always with explicit confirmation; this repository never silently creates, copies, or modifies user hooks. Product-specific items (the agy CLI, credentials, and working hook registration) remain the local agy installation. If any agy prerequisite is absent, leave agy unselected and use Cursor; the supervisor fails closed rather than falling back to screen polling.
 
 ## Setup shared by both profiles
 
@@ -378,7 +407,8 @@ bash tests/executor-profile-contract.sh
 bash tests/agy-executor-contract.sh
 bash tests/cmux-agent-timeline-contract.sh
 bash tests/cursor-transcript-bridge-contract.sh
-bash -n tests/*.sh adapters/cursor/*.sh adapters/agy/*.sh
+bash tests/cmux-agent-setup-contract.sh
+bash -n tools/cmux-agent-setup.sh tests/*.sh adapters/cursor/*.sh adapters/agy/*.sh
 python3 -m json.tool <each changed JSON file>
 git diff --check
 ```
