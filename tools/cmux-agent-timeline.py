@@ -29,6 +29,46 @@ EVENT_RE = re.compile(r"^[a-z][a-z0-9_.-]{1,63}$")
 DETAIL_KEY_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 SOURCES = {"bridge", "cursor", "supervisor", "system", "user", "watcher"}
 MAX_VALUE_LENGTH = 512
+# Provenance is owned by the timeline writer.  A caller-supplied detail may
+# not shadow a top-level field (especially source/event/job_nonce) or create a
+# second identity/clock that a renderer could accidentally trust.
+RESERVED_DETAIL_KEYS = {
+    # Every top-level identity, clock, and semantic field is owned by this
+    # writer.  Keeping the complete set here prevents a detail from replacing
+    # a value that a viewer or consumer may trust.
+    "schema_version", "event_id", "job_nonce", "source", "event", "at",
+    "at_ms", "monotonic_ns", "workspace", "surface", "cwd", "state",
+    "reason", "question_id", "question_source",
+    "question_kind", "outcome", "status", "quiet_seconds", "pane_state",
+    "pane_reason", "previous_state", "failure_latched", "execution_mode",
+    "evidence_class", "task_payload_sha256", "capability_manifest_sha256",
+}
+CAPABILITY_EVENTS = {
+    "capability_discovered", "capability_requested", "capability_decision",
+    "capability_reminder",
+}
+CAPABILITY_DETAIL_KEYS = {
+    "request_id", "capability_id", "capability_kind", "scope_class",
+    "decision", "status",
+}
+CAPABILITY_KINDS = {"local_skill", "local_read_only_command", "mcp_tool", "network", "external_data"}
+CAPABILITY_SCOPE_CLASSES = {"local-read-only", "local-skill", "mcp", "network", "external-data", "write"}
+CAPABILITY_DECISIONS = {"approve", "deny", "ask_user"}
+CAPABILITY_STATUSES = {
+    "discovered", "requested", "approved", "denied", "ask_user", "reminded",
+    "expired", "escalated", "stopped", "ignored", "replayed", "budget-exhausted",
+    "skew", "failed", "pending", "open", "closed", "success", "error", "accepted",
+    "denied-expired",
+    # Stable protocol outcome labels are still normalized enum values, not
+    # free-form reason/query text.
+    "capability-request-budget-exhausted", "capability-reminder-budget-exhausted",
+    "capability-protocol-version-skew", "capability-violation-stop",
+    "capability-grant-expired", "capability-request-replayed",
+    "capability-request-open", "task-payload-hash-mismatch",
+    "task-contract-version-skew",
+}
+CAPABILITY_VALUE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+CAPABILITY_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 
 HTML_SOURCE_COLORS = {
     "supervisor": "#2563eb",
@@ -56,7 +96,11 @@ def fail(message: str) -> None:
 def bounded(value: str | None, name: str) -> str | None:
     if value is None:
         return None
-    if not value or len(value) > MAX_VALUE_LENGTH or "\n" in value or "\r" in value:
+    try:
+        size = len(value.encode("utf-8"))
+    except UnicodeEncodeError:
+        fail(f"{name} is not valid UTF-8")
+    if not value or size > MAX_VALUE_LENGTH or any(ord(char) < 0x20 or ord(char) == 0x7F for char in value):
         fail(f"{name} is empty or malformed")
     return value
 
@@ -95,18 +139,53 @@ def timeline_path(value: str) -> pathlib.Path:
 
 
 def timestamp(epoch_ms: int) -> str:
-    return dt.datetime.fromtimestamp(epoch_ms / 1000, dt.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    try:
+        return dt.datetime.fromtimestamp(epoch_ms / 1000, dt.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    except (OverflowError, OSError, ValueError):
+        fail("timestamp is out of range")
+    raise AssertionError("unreachable")
 
 
-def parse_details(values: list[str]) -> dict[str, str]:
+def validate_capability_detail(key: str, value: str) -> str:
+    """Validate the small metadata vocabulary allowed on capability events."""
+    if key == "request_id":
+        if not CAPABILITY_VALUE_RE.fullmatch(value):
+            fail(f"capability detail {key} is malformed")
+    elif key == "capability_id":
+        if (
+            not CAPABILITY_ID_RE.fullmatch(value)
+            or "//" in value
+            or any(part in {"", ".", ".."} for part in value.split("/"))
+        ):
+            fail(f"capability detail {key} is malformed")
+    elif key == "capability_kind" and value not in CAPABILITY_KINDS:
+        fail("capability detail capability_kind is unsupported")
+    elif key == "scope_class" and value not in CAPABILITY_SCOPE_CLASSES:
+        fail("capability detail scope_class is unsupported")
+    elif key == "decision" and value not in CAPABILITY_DECISIONS:
+        fail("capability detail decision is unsupported")
+    elif key == "status" and value not in CAPABILITY_STATUSES:
+        fail("capability detail status is unsupported")
+    return value
+
+
+def parse_details(values: list[str], event_name: str = "") -> dict[str, str]:
     details: dict[str, str] = {}
+    allowed = CAPABILITY_DETAIL_KEYS if event_name in CAPABILITY_EVENTS else None
     for item in values:
         if "=" not in item:
             fail("timeline detail must use key=value")
         key, value = item.split("=", 1)
         if not DETAIL_KEY_RE.fullmatch(key) or key in details:
             fail("timeline detail key is malformed or duplicated")
-        details[key] = required_arg(value, f"detail {key}")
+        if key in RESERVED_DETAIL_KEYS and not (event_name in CAPABILITY_EVENTS and key == "status"):
+            fail("timeline detail key is reserved provenance")
+        if allowed is not None and key not in allowed:
+            fail("capability timeline detail is not an allowed metadata field")
+        value = required_arg(value, f"detail {key}")
+        if allowed is not None:
+            value = validate_capability_detail(key, value)
+        details[key] = value
     return details
 
 
@@ -119,6 +198,8 @@ def record_event(args: argparse.Namespace) -> None:
         fail("event name is malformed")
     if source not in SOURCES:
         fail("source is unsupported")
+    if event_name in CAPABILITY_EVENTS and source != "supervisor":
+        fail("capability events require supervisor provenance")
 
     epoch_ms = args.at_ms if args.at_ms is not None else int(time.time() * 1000)
     monotonic_ns = args.monotonic_ns if args.monotonic_ns is not None else time.monotonic_ns()
@@ -151,12 +232,22 @@ def record_event(args: argparse.Namespace) -> None:
     ):
         value_arg = bounded(getattr(args, name), name)
         if value_arg is not None:
+            if event_name in CAPABILITY_EVENTS and name != "status":
+                fail("capability events may not contain free-text event fields")
+            if event_name in CAPABILITY_EVENTS and name == "status":
+                value_arg = validate_capability_detail("status", value_arg)
             value[name] = value_arg
     if args.quiet_seconds is not None:
         if not math.isfinite(args.quiet_seconds) or args.quiet_seconds < 0:
             fail("quiet seconds must be a finite non-negative number")
         value["quiet_seconds"] = round(args.quiet_seconds, 3)
-    value.update(parse_details(args.detail))
+    details = parse_details(args.detail, event_name)
+    # Even capability ``status`` is an allowed metadata key, but supplying it
+    # both as a top-level option and as a detail would make the later update
+    # silently choose one value. Reject all duplicate ownership explicitly.
+    if any(key in value for key in details):
+        fail("timeline detail shadows an existing field")
+    value.update(details)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     # Adapters append directly as well; keep one lock name for all writers.
@@ -177,8 +268,19 @@ def event_at_ms(value: dict[str, Any], line_number: int) -> int:
     raw = value.get("at_ms")
     if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
         raw_float = value.get("at")
-        if isinstance(raw_float, (int, float)) and not isinstance(raw_float, bool) and raw_float >= 0:
-            return int(raw_float * 1000)
+        try:
+            finite_float = (
+                isinstance(raw_float, (int, float))
+                and not isinstance(raw_float, bool)
+                and math.isfinite(raw_float)
+            )
+        except (OverflowError, TypeError):
+            finite_float = False
+        if finite_float and raw_float >= 0:
+            try:
+                return int(raw_float * 1000)
+            except (OverflowError, ValueError):
+                pass
         raise ValueError(f"line {line_number}: missing or malformed timestamp")
     return raw
 
@@ -193,13 +295,22 @@ def load_events(path: pathlib.Path) -> tuple[list[dict[str, Any]], str]:
             for line_number, raw in enumerate(stream, 1):
                 if not raw.strip():
                     continue
+                def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+                    result: dict[str, Any] = {}
+                    for key, item in pairs:
+                        if key in result:
+                            fail(f"timeline record at line {line_number} has duplicate JSON keys")
+                        result[key] = item
+                    return result
+
                 try:
-                    value = json.loads(raw)
+                    value = json.loads(raw, object_pairs_hook=reject_duplicate_keys)
                 except json.JSONDecodeError as exc:
                     fail(f"malformed JSON at line {line_number}: {exc}")
                 if not isinstance(value, dict):
                     fail(f"timeline record at line {line_number} is not an object")
-                if value.get("schema_version") != SCHEMA_VERSION:
+                schema_version = value.get("schema_version")
+                if not isinstance(schema_version, int) or isinstance(schema_version, bool) or schema_version != SCHEMA_VERSION:
                     fail(f"timeline record at line {line_number} has an unsupported schema")
                 current_nonce = value.get("job_nonce")
                 if not isinstance(current_nonce, str) or not NONCE_RE.fullmatch(current_nonce):
@@ -214,10 +325,33 @@ def load_events(path: pathlib.Path) -> tuple[list[dict[str, Any]], str]:
                     fail(f"timeline record at line {line_number} has a malformed event")
                 if source not in SOURCES:
                     fail(f"timeline record at line {line_number} has an unsupported source")
+                if event_name in CAPABILITY_EVENTS:
+                    if source != "supervisor":
+                        fail(f"timeline capability event at line {line_number} lacks supervisor provenance")
+                    base_fields = {
+                        "schema_version", "event_id", "job_nonce", "source", "event",
+                        "at", "at_ms", "monotonic_ns", "workspace", "surface", "cwd",
+                    }
+                    unexpected = set(value) - base_fields - CAPABILITY_DETAIL_KEYS
+                    if unexpected:
+                        fail(f"timeline capability detail at line {line_number} is not metadata-only")
+                    for detail_key in CAPABILITY_DETAIL_KEYS:
+                        if detail_key in value:
+                            detail_value = value[detail_key]
+                            if not isinstance(detail_value, str):
+                                fail(f"timeline capability detail at line {line_number} is malformed")
+                            try:
+                                bounded(detail_value, f"capability detail {detail_key}")
+                                validate_capability_detail(detail_key, detail_value)
+                            except SystemExit:
+                                raise
                 try:
                     value["_at_ms"] = event_at_ms(value, line_number)
                 except ValueError as exc:
                     fail(str(exc))
+                # Validate the epoch range while loading so a malformed
+                # timeline cannot crash a later markdown/HTML renderer.
+                timestamp(value["_at_ms"])
                 value["_line"] = line_number
                 events.append(value)
     except OSError as exc:

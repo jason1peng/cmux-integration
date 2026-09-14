@@ -1,6 +1,15 @@
 {
   "profile_id": "agy",
   "schema_version": 1,
+  "capability_policy_version": 1,
+  "capability_adapter": {
+    "required": true,
+    "version": 1,
+    "discovery": ["local_skill_metadata", "mcp_metadata"],
+    "request_transport": "profile-owned-transcript",
+    "readiness": "supervisor-verifies-manifest-and-task-digests",
+    "version_skew_reason": "capability-protocol-version-skew"
+  },
   "launch": {
     "command": "${HOME}/bin/agy-with-permissions",
     "argv": [],
@@ -44,7 +53,19 @@
     "source": "${HOME}/agi-result.txt",
     "kind": "post-invocation-hook-transcript",
     "hook": "agy-result-hook",
-    "freshness": "record-file-identity-offset-and-mtime-before-launch"
+    "freshness": "supervisor mapping source.path/start_offset/launch_mtime_ns and result.path/start_offset/launch_mtime_ns are required; the hook accepts only the mapped canonical transcriptPath and reads complete bytes after the persisted source cursor; result/event evidence is staged in a durable pending transaction and the source cursor commits only after both sinks, with idempotent crash/replay recovery; reject stale, truncation, replacement, and unbound source identity"
+  },
+  "supervisor_mapping": {
+    "required": true,
+    "file": "${CMUX_AGENT_RUNTIME}/jobs/${job_nonce}/agy.mapping.json",
+    "result_protocol": "agy-post-invocation-hook",
+    "source_binding": "mapping source.path must equal the canonical hook transcriptPath; mapping result.path must equal ${HOME}/agi-result.txt",
+    "exports": [
+      "CMUX_AGENT_RUNTIME",
+      "CMUX_AGENT_JOB_RUNTIME",
+      "CMUX_AGENT_JOB_NONCE"
+    ],
+    "ownership": "supervisor-generated and supervisor-validated; job text, hook payloads, and pane text cannot override source or result identity"
   },
   "result": {
     "marker_rule": "nonce-framed-marker-in-same-fresh-appended-segment",
@@ -78,7 +99,11 @@
       "workspace",
       "surface",
       "cwd",
-      "transcript_source"
+      "transcript_source",
+      "transcript_path",
+      "source_start_offset",
+      "source_offset",
+      "transcript_offset"
     ],
     "deduplicate_by": [
       "event_id",

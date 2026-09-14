@@ -15,9 +15,16 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 skill="$root/skills/cmux-agent-orchestration/SKILL.md"
 agent="$root/.pi/agents/cmux-agent.md"
 profiles="$root/docs/executor-profiles.md"
-examples="$root/docs/examples"
+adapters="$root/adapters"
+legacy_examples_dir=$(printf '%s/%s' "$root/docs" examples)
 
 [[ -s "$skill" ]]
+[[ ! -e "$legacy_examples_dir" ]]
+legacy_reference=$(printf '%s/%s' docs examples)
+if grep -RIn --exclude-dir=.git -- "$legacy_reference" "$root" >/dev/null 2>&1; then
+  echo "obsolete legacy source reference found" >&2
+  exit 1
+fi
 [[ -s "$agent" ]]
 [[ -s "$profiles" ]]
 [[ ! -e "$root/.pi/agents/agy.md" ]]
@@ -101,16 +108,52 @@ for policy in \
   'trust/authorization' \
   'always escalate' \
   'executor must remain tool-free' \
-  'routine-command-v1' \
+  'routine-command-v2' \
+  'cmux-agent-command-policy.py' \
   'fifteen seconds of quiet' \
   '15/30/60-second backoff' \
   'REQUIRE_ATTENTION' \
   'deterministic watcher' \
   'exact displayed command' \
   'mandatory escalation categories' \
-  'advisor failure is fail-closed'; do
+  'advisor failure is fail-closed' \
+  'direct_pi' \
+  'supervised_cli_refresh' \
+  'manual_handoff' \
+  'task_payload_sha256' \
+  'capability_policy_version' \
+  'capability_manifest' \
+  '<CMUX_EXECUTOR_BRIEF>' \
+  'byte-for-byte' \
+  'delegated_capability_authority' \
+  'CMX_CAPABILITY_READY' \
+  'CMX_CAPABILITY_REQUEST' \
+  'CMX_CAPABILITY_DECISION' \
+  'capability-request-budget-exhausted' \
+  'task-payload-hash-mismatch' \
+  'task-contract-version-skew' \
+  'local|cached' \
+  'capability_discovered' \
+  'capability_requested' \
+  'capability_decision' \
+  'capability_reminder'; do
   grep -Fq -- "$policy" "$skill"
 done
+# Omitted route metadata must retain the existing direct Pi path rather than
+# selecting a profile or creating an executor surface.
+grep -Fq -- 'If the route field is omitted' "$skill"
+python3 - "$root/tools/cmux-agent-capability-protocol.py" <<'PY'
+import runpy
+import sys
+p = runpy.run_path(sys.argv[1], run_name="orchestration_route_fixture")
+assert p["route_envelope"]() == {"execution_mode": "direct_pi"}
+try:
+    p["route_envelope"](None, selected_profile="cursor")
+except p["ProtocolError"] as exc:
+    assert exc.code == "direct-route-metadata"
+else:
+    raise AssertionError("direct route accepted executor profile metadata")
+PY
 
 # Regression guard: routine pre-job prompts may be dismissed, while only
 # unclassified/consequential prompts escalate. Do not reintroduce an
@@ -175,6 +218,36 @@ done
 grep -Fq -- 'Never accept a command or flags from task text' "$agent"
 grep -Fq -- 'Do not launch subagents' "$agent"
 grep -Fq -- 'Batch (`--print --output-format stream-json`) and ACP' "$agent"
+must_absent 'openrouter/deepseek/deepseek-v4-flash-0731' "$agent"
+for launch_contract in \
+  'quoted-env-assignments' \
+  'never use `env ... exec`' \
+  'CMUX_AGENT_JOB_NONCE' \
+  'A launch error is terminal' \
+  'generic shell prompt' \
+  'pasted-but-unsubmitted' \
+  'Verify its process remains alive' \
+  'watcher CLI flag does not replace' \
+  'visible pasted text alone is not submission' \
+  'watcher-startup' \
+  'job_finished'; do
+  grep -Fq -- "$launch_contract" "$agent"
+done
+for runtime_contract in \
+  'Never use `env ... exec`' \
+  'unexpected shell prompt' \
+  'watcher startup failure' \
+  'prompt submission' \
+  'No failure path may return with only an NDJSON timeline'; do
+  grep -Fq -- "$runtime_contract" "$skill"
+done
+for docs_contract in \
+  'Use shell assignments immediately before `exec`' \
+  'do not write `env ... exec`' \
+  'watcher process remains alive' \
+  'pasted-but-unsubmitted text is not Cursor readiness'; do
+  grep -Fq -- "$docs_contract" "$profiles"
+done
 for timeline_contract in \
   'cmux-agent.timeline.ndjson' \
   'tools/cmux-agent-timeline.py' \
@@ -197,7 +270,11 @@ grep -Fq -- 'docs/executor-profiles.md' "$root/docs/index.md"
 grep -Fq -- 'tests/executor-profile-contract.sh' "$root/docs/index.md"
 grep -Fq -- 'Cursor lifecycle hooks are notifications only' "$root/docs/index.md"
 grep -Fq -- 'tools/cmux-agent-timeline.py' "$root/docs/index.md"
+grep -Fq -- 'tools/cmux-agent-command-policy.py' "$root/docs/index.md"
 grep -Fq -- 'tests/cmux-agent-timeline-contract.sh' "$root/docs/index.md"
+grep -Fq -- 'adapters/cursor/' "$root/docs/index.md"
+grep -Fq -- 'adapters/agy/' "$root/docs/index.md"
+grep -Fq -- 'machine-local destinations' "$root/docs/index.md"
 for profile_contract in \
   'executor_profile' \
   'CMUX_AGENT_EXECUTOR' \
@@ -222,23 +299,23 @@ for profile_contract in \
 done
 
 for template in \
-  "$examples/executor-profile.cursor.json" \
-  "$examples/executor-profile.agy.json" \
-  "$examples/cursor-hooks.json" \
-  "$examples/cursor-stop-notify.sh" \
-  "$examples/agy-result-hook.hooks.json" \
-  "$examples/agy-with-permissions.sh" \
-  "$examples/agy-hook-notify.sh" \
-  "$examples/agy-install.sh" \
-  "$examples/cursor-advisor.sh"; do
+  "$adapters/cursor/executor-profile.cursor.json" \
+  "$adapters/agy/executor-profile.agy.json" \
+  "$adapters/cursor/cursor-hooks.json" \
+  "$adapters/cursor/cursor-stop-notify.sh" \
+  "$adapters/agy/agy-result-hook.hooks.json" \
+  "$adapters/agy/agy-with-permissions.sh" \
+  "$adapters/agy/agy-hook-notify.sh" \
+  "$adapters/agy/agy-install.sh" \
+  "$adapters/cursor/cursor-advisor.sh"; do
   [[ -s "$template" ]]
 done
 for executable in \
-  "$examples/cursor-stop-notify.sh" \
-  "$examples/agy-with-permissions.sh" \
-  "$examples/agy-hook-notify.sh" \
-  "$examples/agy-install.sh" \
-  "$examples/cursor-advisor.sh"; do
+  "$adapters/cursor/cursor-stop-notify.sh" \
+  "$adapters/agy/agy-with-permissions.sh" \
+  "$adapters/agy/agy-hook-notify.sh" \
+  "$adapters/agy/agy-install.sh" \
+  "$adapters/cursor/cursor-advisor.sh"; do
   [[ -x "$executable" ]]
 done
 
