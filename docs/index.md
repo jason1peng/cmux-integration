@@ -31,6 +31,32 @@ Before planning or implementation:
 - `tools/cmux-agent-capability-protocol.py` — validate the CLI-neutral capability/task protocol and one hashed task core shared by direct, supervised, and manual routes.
 - `tests/` — contract and regression checks. The orchestration contract test is `tests/cmux-agent-orchestration-contract.sh`; timeline behavior is covered by `tests/cmux-agent-timeline-contract.sh`.
 
+The direct-Pi prompt remains the default route. The diagram below shows the boundary between committed sources, explicitly selected operator installations, and machine-local job state; detailed installation steps remain in `README.md`. Per-job runtime under `~/.local/state/cmux-agent/jobs/<job_nonce>` remains machine-local and is not committed.
+
+```mermaid
+flowchart LR
+    subgraph repo["Checked-in repository sources"]
+        sources["README.md / docs/<br/>adapters/cursor/ · adapters/agy/<br/>(copyable source templates)<br/>skills/ · .pi/agents/ · tools/ · tests/"]
+    end
+
+    direct["Direct-Pi prompt<br/>(default route)"]
+    install["Explicit operator installation<br/>(selected sources only; no auto-install)"]
+
+    subgraph local["Machine-local destinations"]
+        pi["~/.pi/agent/"]
+        config["~/.config/cmux-agent/"]
+        cursor["~/.cursor/"]
+        bin["~/bin/"]
+    end
+
+    runtime["Per-job runtime state<br/>~/.local/state/cmux-agent/jobs/&lt;job_nonce&gt;<br/>(machine-local; not committed)"]
+
+    sources -->|"default project path"| direct
+    sources -->|"operator-selected files"| install
+    install --> local
+    local --> runtime
+```
+
 ## File Catalog
 
 | Path | Purpose |
