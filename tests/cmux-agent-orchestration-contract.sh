@@ -15,9 +15,16 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 skill="$root/skills/cmux-agent-orchestration/SKILL.md"
 agent="$root/.pi/agents/cmux-agent.md"
 profiles="$root/docs/executor-profiles.md"
-examples="$root/docs/examples"
+adapters="$root/adapters"
+legacy_examples_dir=$(printf '%s/%s' "$root/docs" examples)
 
 [[ -s "$skill" ]]
+[[ ! -e "$legacy_examples_dir" ]]
+legacy_reference=$(printf '%s/%s' docs examples)
+if grep -RIn --exclude-dir=.git -- "$legacy_reference" "$root" >/dev/null 2>&1; then
+  echo "obsolete legacy source reference found" >&2
+  exit 1
+fi
 [[ -s "$agent" ]]
 [[ -s "$profiles" ]]
 [[ ! -e "$root/.pi/agents/agy.md" ]]
@@ -265,6 +272,9 @@ grep -Fq -- 'Cursor lifecycle hooks are notifications only' "$root/docs/index.md
 grep -Fq -- 'tools/cmux-agent-timeline.py' "$root/docs/index.md"
 grep -Fq -- 'tools/cmux-agent-command-policy.py' "$root/docs/index.md"
 grep -Fq -- 'tests/cmux-agent-timeline-contract.sh' "$root/docs/index.md"
+grep -Fq -- 'adapters/cursor/' "$root/docs/index.md"
+grep -Fq -- 'adapters/agy/' "$root/docs/index.md"
+grep -Fq -- 'machine-local destinations' "$root/docs/index.md"
 for profile_contract in \
   'executor_profile' \
   'CMUX_AGENT_EXECUTOR' \
@@ -289,23 +299,23 @@ for profile_contract in \
 done
 
 for template in \
-  "$examples/executor-profile.cursor.json" \
-  "$examples/executor-profile.agy.json" \
-  "$examples/cursor-hooks.json" \
-  "$examples/cursor-stop-notify.sh" \
-  "$examples/agy-result-hook.hooks.json" \
-  "$examples/agy-with-permissions.sh" \
-  "$examples/agy-hook-notify.sh" \
-  "$examples/agy-install.sh" \
-  "$examples/cursor-advisor.sh"; do
+  "$adapters/cursor/executor-profile.cursor.json" \
+  "$adapters/agy/executor-profile.agy.json" \
+  "$adapters/cursor/cursor-hooks.json" \
+  "$adapters/cursor/cursor-stop-notify.sh" \
+  "$adapters/agy/agy-result-hook.hooks.json" \
+  "$adapters/agy/agy-with-permissions.sh" \
+  "$adapters/agy/agy-hook-notify.sh" \
+  "$adapters/agy/agy-install.sh" \
+  "$adapters/cursor/cursor-advisor.sh"; do
   [[ -s "$template" ]]
 done
 for executable in \
-  "$examples/cursor-stop-notify.sh" \
-  "$examples/agy-with-permissions.sh" \
-  "$examples/agy-hook-notify.sh" \
-  "$examples/agy-install.sh" \
-  "$examples/cursor-advisor.sh"; do
+  "$adapters/cursor/cursor-stop-notify.sh" \
+  "$adapters/agy/agy-with-permissions.sh" \
+  "$adapters/agy/agy-hook-notify.sh" \
+  "$adapters/agy/agy-install.sh" \
+  "$adapters/cursor/cursor-advisor.sh"; do
   [[ -x "$executable" ]]
 done
 

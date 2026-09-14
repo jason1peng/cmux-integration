@@ -3,11 +3,11 @@
 # the `agy` executor profile needs, with explicit operator confirmation.
 #
 # Usage:
-#   bash docs/examples/agy-install.sh
+#   bash adapters/agy/agy-install.sh
 #
 # This script:
-#   1. copies docs/examples/agy-with-permissions.sh  -> ~/bin/agy-with-permissions
-#   2. copies docs/examples/agy-hook-notify.sh       -> ~/bin/agy-hook-notify.sh
+#   1. copies adapters/agy/agy-with-permissions.sh  -> ~/bin/agy-with-permissions
+#   2. copies adapters/agy/agy-hook-notify.sh       -> ~/bin/agy-hook-notify.sh
 #   3. merges the "agy-result-hook" PostInvocation registration into the global
 #      agy hooks config (default ~/.gemini/config/hooks.json), preserving all
 #      unrelated existing hook entries.
@@ -18,15 +18,15 @@
 set -euo pipefail
 
 repo=$(cd "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
-examples="$repo/docs/examples"
+adapter_dir="$repo/adapters/agy"
 
 home="${CMUX_AGENT_HOME:-$(printf '%s' "$HOME")}"
 bin_dir="${CMUX_AGENT_BIN:-${home}/bin}"
 hooks_config="${CMUX_AGENT_HOOKS_CONFIG:-${home}/.gemini/config/hooks.json}"
 
-source_wrapper="$examples/agy-with-permissions.sh"
-source_adapter="$examples/agy-hook-notify.sh"
-source_registration="$examples/agy-result-hook.hooks.json"
+source_wrapper="$adapter_dir/agy-with-permissions.sh"
+source_adapter="$adapter_dir/agy-hook-notify.sh"
+source_registration="$adapter_dir/agy-result-hook.hooks.json"
 
 for required in "$source_wrapper" "$source_adapter" "$source_registration"; do
   if [[ ! -s "$required" ]]; then

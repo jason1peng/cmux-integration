@@ -2,12 +2,13 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-examples="$root/docs/examples"
+cursor_adapters="$root/adapters/cursor"
+agy_adapters="$root/adapters/agy"
 profiles_doc="$root/docs/executor-profiles.md"
 
 command -v python3 >/dev/null
 
-python3 - "$examples" <<'PY'
+python3 - "$cursor_adapters" "$agy_adapters" <<'PY'
 import json
 import os
 import re
@@ -16,11 +17,12 @@ import sys
 import tempfile
 from pathlib import Path
 
-examples = Path(sys.argv[1])
+cursor_adapters = Path(sys.argv[1])
+agy_adapters = Path(sys.argv[2])
 
 
-def load(name):
-    path = examples / name
+def load(directory, name):
+    path = directory / name
     with path.open() as stream:
         value = json.load(stream)
     assert isinstance(value, dict), f"{name}: profile must be an object"
@@ -70,7 +72,7 @@ def common(profile, name):
     assert profile["stop"]["deadline_seconds"] > 0, name
 
 
-cursor = load("executor-profile.cursor.json")
+cursor = load(cursor_adapters, "executor-profile.cursor.json")
 common(cursor, "cursor")
 assert cursor["profile_id"] == "cursor"
 assert cursor["launch"]["command"] == "agent"
@@ -121,7 +123,7 @@ assert advisor["mandatory_escalation_categories"] == [
 assert "exact displayed command" in advisor["approval_rule"]
 assert "fail closed" in advisor["failure_rule"]
 
-agy = load("executor-profile.agy.json")
+agy = load(agy_adapters, "executor-profile.agy.json")
 common(agy, "agy")
 assert agy["profile_id"] == "agy"
 assert agy["launch"]["command"] == "${HOME}/bin/agy-with-permissions"
@@ -142,7 +144,7 @@ assert agy["supervisor_mapping"]["file"].endswith("/jobs/${job_nonce}/agy.mappin
 assert "CMUX_AGENT_JOB_NONCE" in agy["supervisor_mapping"]["exports"]
 assert "mapping source.path" in agy["supervisor_mapping"]["source_binding"]
 
-hooks = json.loads((examples / "cursor-hooks.json").read_text())
+hooks = json.loads((cursor_adapters / "cursor-hooks.json").read_text())
 assert hooks["hooks"]["stop"][0]["command"] == ".cursor/hooks/cursor-stop-notify.sh"
 assert hooks["hooks"]["stop"][0]["timeout"] == 5
 for event in ("sessionStart", "beforeSubmitPrompt", "afterAgentThought", "afterFileEdit", "afterShellExecution", "afterAgentResponse"):
@@ -371,13 +373,13 @@ PY
 runtime=$(mktemp -d "${TMPDIR:-/tmp}/cmux-agent-profile-test.XXXXXX")
 trap 'rm -rf "$runtime"' EXIT
 valid='{"hook_event_name":"stop","status":"success","conversation_id":"conversation-test","generation_id":"generation-test","session_id":"session-test","transcript_path":"/tmp/transcript-test"}'
-printf '%s\n' "$valid" | CMUX_AGENT_RUNTIME="$runtime" "$examples/cursor-stop-notify.sh"
+printf '%s\n' "$valid" | CMUX_AGENT_RUNTIME="$runtime" "$cursor_adapters/cursor-stop-notify.sh"
 grep -Fq '"hook_event_name":"stop"' "$runtime/events/cursor-stop.ndjson"
-if printf '%s\n' '{"hook_event_name":"beforeSubmitPrompt"}' | CMUX_AGENT_RUNTIME="$runtime" "$examples/cursor-stop-notify.sh" 2>/dev/null; then
+if printf '%s\n' '{"hook_event_name":"beforeSubmitPrompt"}' | CMUX_AGENT_RUNTIME="$runtime" "$cursor_adapters/cursor-stop-notify.sh" 2>/dev/null; then
   echo 'cursor stop adapter accepted a non-stop event' >&2
   exit 1
 fi
-if printf '%s\n' '{"hook_event_name":"stop","status":"success"}' | CMUX_AGENT_RUNTIME="$runtime" "$examples/cursor-stop-notify.sh" 2>/dev/null; then
+if printf '%s\n' '{"hook_event_name":"stop","status":"success"}' | CMUX_AGENT_RUNTIME="$runtime" "$cursor_adapters/cursor-stop-notify.sh" 2>/dev/null; then
   echo 'cursor stop adapter accepted a malformed event' >&2
   exit 1
 fi
@@ -387,7 +389,7 @@ grep -Fq -- 'Cursor' "$profiles_doc"
 grep -Fq -- 'notifications only' "$profiles_doc"
 grep -Fq -- 'fail closed' "$profiles_doc"
 grep -Fq -- 'pending' "$profiles_doc"
-python3 - "$examples/agy-result-hook.hooks.json" <<'PY'
+python3 - "$agy_adapters/agy-result-hook.hooks.json" <<'PY'
 import json
 from pathlib import Path
 import sys
@@ -426,8 +428,8 @@ for launch_safety in \
   grep -Fq -- "$launch_safety" "$profiles_doc"
 done
 # set -e ignores !-negated failures; assert leakage bounds explicitly.
-if grep -Eq '/Users/|/home/' "$examples"/*.json "$examples"/*.sh; then
-  echo 'example templates leaked a private path' >&2
+if grep -Eq '/Users/|/home/' "$cursor_adapters"/*.json "$cursor_adapters"/*.sh "$agy_adapters"/*.json "$agy_adapters"/*.sh; then
+  echo 'adapter templates leaked a private path' >&2
   exit 1
 fi
 

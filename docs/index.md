@@ -23,6 +23,7 @@ Before planning or implementation:
 
 - `README.md` — user-facing introduction, prerequisites, setup, and quick-start usage.
 - `docs/` — documentation entry point and repository-wide change principles.
+- `adapters/` — copyable Cursor and agy runtime/profile source templates. Operators install selected files explicitly into machine-local destinations; these directories are not machine-local configuration.
 - `skills/` — reusable Pi skills. The cmux orchestration skill is at `skills/cmux-agent-orchestration/SKILL.md`.
 - `.pi/agents/` — project-scoped pi-subagents definitions. The generic supervisor is at `.pi/agents/cmux-agent.md` (aliases: `agy`, `cmux-agent-supervisor`).
 - `tools/cmux-agent-timeline.py` — append and render metadata-only per-job timelines, including deterministic HTML graphs.
@@ -42,7 +43,8 @@ Before planning or implementation:
 | `skills/cmux-agent-orchestration/SKILL.md` | Machine-local executor-profile contract, marker protocol, dedicated `cmux-agent` workspace policy, project-labeled new panes, executor-ready gate before job submission, hybrid push+pull monitoring, hook-provided Cursor transcript bridge, low-latency watcher, supervisor-owned turn-settled gate, per-job timeline/latency reporting, escalation discretion for routine prompts, approval routing, lifecycle, failure handling, deferred transports, and verification scenarios. |
 | `.pi/agents/cmux-agent.md` | Canonical generic thin supervisor; `agy` and `cmux-agent-supervisor` remain compatibility aliases. |
 | `docs/executor-profiles.md` | Profile selection/schema, capability-adapter/version requirements, Cursor interactive hook-provided transcript bridge and turn-settled watcher setup, agy compatibility details, disposable validation evidence, and batch/ACP limitations. |
-| `docs/examples/` | Copyable Cursor/agy executor profiles, Cursor bridge/watcher plus optional bounded advisor templates, agy wrapper + PostInvocation lifecycle templates, and an explicit-confirmation installer. These are not machine-local configuration. |
+| `adapters/cursor/` | Copyable Cursor profile, hook bridge/watcher, stop hook, registration, and optional advisor templates. Install selected files explicitly to machine-local destinations; these are not machine-local configuration. |
+| `adapters/agy/` | Copyable agy profile, wrapper, PostInvocation adapter/registration, and explicit-confirmation installer. Install selected files explicitly to machine-local destinations; these are not machine-local configuration. |
 | `tools/cmux-agent-timeline.py` | Append and render metadata-only per-job timelines with Markdown, JSON, and deterministic responsive HTML/SVG graph views, watcher state bands, observation milestones, latency summaries, and supervisor-event provenance. |
 | `tools/cmux-agent-command-policy.py` | Single non-executing v2 validator for bounded local read-only command recommendations and Git helper/configuration boundary checks. |
 | `tools/cmux-agent-capability-protocol.py` | Canonical manifest/task-core bytes and hashes, route envelopes, capability readiness/request/decision parsing, bounded recovery, and result evidence labels. |
@@ -70,6 +72,6 @@ For orchestration changes:
 ## How To Add or Update Docs
 
 - Add repository-local plans/specs under `docs/plan/`.
-- Update this index whenever docs, skills, agent definitions, or test entry points are added, removed, renamed, or repurposed.
+- Update this index whenever adapters, docs, skills, agent definitions, or test entry points are added, removed, renamed, or repurposed.
 - Keep repo-wide standards in `docs/principles.md`; do not duplicate them across root instruction files.
 - Keep root AI instruction files concise and pointing to this index and `docs/principles.md`.

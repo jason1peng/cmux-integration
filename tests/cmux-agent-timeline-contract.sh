@@ -5,8 +5,8 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 timeline_tool="$root/tools/cmux-agent-timeline.py"
 [[ -x "$timeline_tool" ]]
 grep -Fq 'cmux-agent.timeline.lock' "$timeline_tool"
-grep -Fq 'cmux-agent.timeline.lock' "$root/docs/examples/cursor-result-watcher.sh"
-grep -Fq 'cmux-agent.timeline.lock' "$root/docs/examples/cursor-transcript-bridge.sh"
+grep -Fq 'cmux-agent.timeline.lock' "$root/adapters/cursor/cursor-result-watcher.sh"
+grep -Fq 'cmux-agent.timeline.lock' "$root/adapters/cursor/cursor-transcript-bridge.sh"
 command -v python3 >/dev/null
 
 runtime=$(mktemp -d "${TMPDIR:-/tmp}/cmux-agent-timeline-contract.XXXXXX")

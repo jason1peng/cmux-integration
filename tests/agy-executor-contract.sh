@@ -8,10 +8,10 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-examples="$root/docs/examples"
+adapter_dir="$root/adapters/agy"
 profiles_doc="$root/docs/executor-profiles.md"
 readme="$root/README.md"
-profile_json="$examples/executor-profile.agy.json"
+profile_json="$adapter_dir/executor-profile.agy.json"
 
 # set -e ignores failures of !-negated commands, so negative assertions must
 # fail explicitly instead of relying on `! grep`.
@@ -23,10 +23,10 @@ must_absent() {
     exit 1
   fi
 }
-wrapper="$examples/agy-with-permissions.sh"
-adapter="$examples/agy-hook-notify.sh"
-registration="$examples/agy-result-hook.hooks.json"
-installer="$examples/agy-install.sh"
+wrapper="$adapter_dir/agy-with-permissions.sh"
+adapter="$adapter_dir/agy-hook-notify.sh"
+registration="$adapter_dir/agy-result-hook.hooks.json"
+installer="$adapter_dir/agy-install.sh"
 
 [[ -s "$wrapper" ]]
 [[ -s "$adapter" ]]
@@ -486,7 +486,7 @@ for marker in (
 ):
     assert marker in adapter_text, f"bounded streaming safeguard missing: {marker}"
 PY
-must_absent -F 'CMUX_AGENT_RESULT_FILE' "$examples"/* "$readme" "$profiles_doc"
+must_absent -F 'CMUX_AGENT_RESULT_FILE' "$adapter_dir"/* "$readme" "$profiles_doc"
 
 # 5. Adapter must not invent a marker: it never reads or injects result markers;
 #    nonce framing stays in the shared evidence contract.
@@ -564,8 +564,8 @@ PY
 [[ ! -e "$real_home/.gemini/config/hooks.json" ]]
 rm -rf "$real_home" "$target_home"
 
-# 8. No machine-specific secrets or private paths in any committed example.
-must_absent -E '/Users/|/home/|/private/|secret|token|bearer|api[_-]?key' "$examples"/*
+# 8. No machine-specific secrets or private paths in any committed adapter source.
+must_absent -E '/Users/|/home/|/private/|secret|token|bearer|api[_-]?key' "$adapter_dir"/*
 must_absent -F '/Users' "$registration" "$profile_json" "$wrapper" "$adapter" "$installer"
 
 # 9. Docs provide the complete agy setup guide and reflect the released state.

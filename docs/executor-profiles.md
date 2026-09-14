@@ -31,9 +31,9 @@ mkdir -p "$CMUX_AGENT_PROFILE_DIR" "$CMUX_AGENT_RUNTIME/jobs" "$CMUX_AGENT_RUNTI
 Install one or both profile templates:
 
 ```bash
-cp "$repo/docs/examples/executor-profile.cursor.json" \
+cp "$repo/adapters/cursor/executor-profile.cursor.json" \
    "$CMUX_AGENT_PROFILE_DIR/cursor.json"
-cp "$repo/docs/examples/executor-profile.agy.json" \
+cp "$repo/adapters/agy/executor-profile.agy.json" \
    "$CMUX_AGENT_PROFILE_DIR/agy.json"
 ```
 
@@ -92,7 +92,7 @@ The Cursor profile invokes a machine-local watcher at `${CMUX_AGENT_CONFIG}/bin/
 
 ```bash
 mkdir -p "$CMUX_AGENT_CONFIG/bin"
-cp "$repo/docs/examples/cursor-result-watcher.sh" \
+cp "$repo/adapters/cursor/cursor-result-watcher.sh" \
    "$CMUX_AGENT_CONFIG/bin/cursor-result-watcher.sh"
 cp "$repo/tools/cmux-agent-command-policy.py" \
    "$CMUX_AGENT_CONFIG/bin/cmux-agent-command-policy.py"
@@ -104,7 +104,7 @@ Install the adapter in the supported user-hook location:
 
 ```bash
 mkdir -p "$HOME/.cursor/hooks"
-cp "$repo/docs/examples/cursor-stop-notify.sh" \
+cp "$repo/adapters/cursor/cursor-stop-notify.sh" \
    "$HOME/.cursor/hooks/cursor-stop-notify.sh"
 chmod +x "$HOME/.cursor/hooks/cursor-stop-notify.sh"
 ```
@@ -122,7 +122,7 @@ Merge this `stop` entry into the existing `$HOME/.cursor/hooks.json`; preserve u
 }
 ```
 
-The user-hook command is relative to `$HOME/.cursor`. For a disposable project instead, copy the adapter to `.cursor/hooks/cursor-stop-notify.sh` and merge `docs/examples/cursor-hooks.json` into that project's `.cursor/hooks.json`. The project command is intentionally `.cursor/hooks/cursor-stop-notify.sh`; do not use the user-relative command in a project hook, and do not use `${CMUX_AGENT_CONFIG}` as a Cursor hook command expansion.
+The user-hook command is relative to `$HOME/.cursor`. For a disposable project instead, copy the adapter to `.cursor/hooks/cursor-stop-notify.sh` and merge `adapters/cursor/cursor-hooks.json` into that project's `.cursor/hooks.json`. The project command is intentionally `.cursor/hooks/cursor-stop-notify.sh`; do not use the user-relative command in a project hook, and do not use `${CMUX_AGENT_CONFIG}` as a Cursor hook command expansion.
 
 ### 4. agy setup
 
@@ -134,10 +134,10 @@ The supported product is the Antigravity-family `agy` CLI (the contract here was
 
 #### b. What this repository provides
 
-- `docs/examples/agy-with-permissions.sh` — a portable launcher that starts agy as `agy --dangerously-skip-permissions` and forwards arguments. It contains no credentials, tokens, or private paths.
-- `docs/examples/agy-hook-notify.sh` — a portable `PostInvocation` lifecycle adapter. It validates the camelCase agy hook JSON, requires the supervisor's persisted `agy.mapping.json`, binds `transcriptPath` to the configured canonical source, reads only complete records after the persisted source cursor, and stages result/event evidence in a durable pending transaction before committing the source cursor. Recovery is idempotent across crashes and persistence failures, so a replay cannot append normalized output or lifecycle evidence twice. It never approves tools, edits user files, or grants permission.
-- `docs/examples/agy-result-hook.hooks.json` — a registration fragment that names the hook `agy-result-hook` and binds the installed adapter as its `PostInvocation` command.
-- `docs/examples/agy-install.sh` — an explicit-confirmation installer that copies the wrapper and adapter into `~/bin` and merges the `agy-result-hook` fragment into the global agy hooks config without deleting unrelated hooks.
+- `adapters/agy/agy-with-permissions.sh` — a portable launcher that starts agy as `agy --dangerously-skip-permissions` and forwards arguments. It contains no credentials, tokens, or private paths.
+- `adapters/agy/agy-hook-notify.sh` — a portable `PostInvocation` lifecycle adapter. It validates the camelCase agy hook JSON, requires the supervisor's persisted `agy.mapping.json`, binds `transcriptPath` to the configured canonical source, reads only complete records after the persisted source cursor, and stages result/event evidence in a durable pending transaction before committing the source cursor. Recovery is idempotent across crashes and persistence failures, so a replay cannot append normalized output or lifecycle evidence twice. It never approves tools, edits user files, or grants permission.
+- `adapters/agy/agy-result-hook.hooks.json` — a registration fragment that names the hook `agy-result-hook` and binds the installed adapter as its `PostInvocation` command.
+- `adapters/agy/agy-install.sh` — an explicit-confirmation installer that copies the wrapper and adapter into `~/bin` and merges the `agy-result-hook` fragment into the global agy hooks config without deleting unrelated hooks.
 - `tests/agy-executor-contract.sh` — focused contract coverage for the wrapper, adapter, registration, installer, and no-secret/no-private-path bounds.
 
 #### c. What must come from the local agy installation
@@ -166,12 +166,12 @@ export CMUX_AGENT_CONFIG="$HOME/.config/cmux-agent"
 export CMUX_AGENT_PROFILE_DIR="$CMUX_AGENT_CONFIG/profiles"
 export CMUX_AGENT_RUNTIME="$HOME/.local/state/cmux-agent"
 mkdir -p "$CMUX_AGENT_PROFILE_DIR" "$CMUX_AGENT_RUNTIME/jobs" "$CMUX_AGENT_RUNTIME/events"
-cp "$repo/docs/examples/executor-profile.agy.json" "$CMUX_AGENT_PROFILE_DIR/agy.json"
+cp "$repo/adapters/agy/executor-profile.agy.json" "$CMUX_AGENT_PROFILE_DIR/agy.json"
 ```
 
 #### f. Wrapper setup
 
-Review, then copy `docs/examples/agy-with-permissions.sh` to `~/bin/agy-with-permissions` (or run the installer). It must be executable by the Pi process. The wrapper is the only place the dangerous flag appears; the supervisor never adds one and never accepts a command or flags from task text.
+Review, then copy `adapters/agy/agy-with-permissions.sh` to `~/bin/agy-with-permissions` (or run the installer). It must be executable by the Pi process. The wrapper is the only place the dangerous flag appears; the supervisor never adds one and never accepts a command or flags from task text.
 
 #### g. PostInvocation hook registration
 
@@ -280,7 +280,7 @@ The common completion gate is unchanged for every profile:
 
 ## Cursor interactive profile
 
-`docs/examples/executor-profile.cursor.json` is the supported Cursor template. It intentionally launches the original non-headless interactive CLI as:
+`adapters/cursor/executor-profile.cursor.json` is the supported Cursor template. It intentionally launches the original non-headless interactive CLI as:
 
 ```text
 agent --trust
@@ -292,7 +292,7 @@ The profile's ready/idle/question probes are bounded screen corroboration. A she
 
 ### Hook-provided transcript bridge
 
-`docs/examples/cursor-transcript-bridge.sh` is an additive command-hook adapter. Register it for `sessionStart`, `beforeSubmitPrompt`, `afterAgentThought`, `afterFileEdit`, `afterShellExecution`, and optionally `afterAgentResponse`; register it alongside the existing stop adapter. Hooks are notifications only: they are asynchronous wakeups and identity/path observations. The bridge accepts the first usable non-null `transcript_path` from a correlated hook payload, or the supplied `CURSOR_TRANSCRIPT_PATH` fallback, only when its canonical absolute value exactly matches the supervisor mapping's required `source.path`. Null/future paths remain observations until a later hook supplies that mapped source. The bridge never scans undocumented Cursor directories.
+`adapters/cursor/cursor-transcript-bridge.sh` is an additive command-hook adapter. Register it for `sessionStart`, `beforeSubmitPrompt`, `afterAgentThought`, `afterFileEdit`, `afterShellExecution`, and optionally `afterAgentResponse`; register it alongside the existing stop adapter. Hooks are notifications only: they are asynchronous wakeups and identity/path observations. The bridge accepts the first usable non-null `transcript_path` from a correlated hook payload, or the supplied `CURSOR_TRANSCRIPT_PATH` fallback, only when its canonical absolute value exactly matches the supervisor mapping's required `source.path`. Null/future paths remain observations until a later hook supplies that mapped source. The bridge never scans undocumented Cursor directories.
 
 The bridge reads only the hook-provided JSONL source after the supervisor boundary. It requires canonical `source.path`, source start offset, launch mtime, existence/creation identity, and path/device/inode/size/mtime checks; it rejects malformed JSONL, stale or uncorrelated sessions, source truncation, replacement, and in-place prefix changes. It normalizes only fresh assistant/tool records, preserves source offsets, excludes user records, removes exact or line-segment prompt echoes without dropping nearby legitimate assistant text, and deduplicates semantic replay. Result/event bytes and the next source cursor are coordinated through a durable pending transaction: evidence is applied idempotently, then the cursor is atomically committed, and a retry repairs or recognizes any interrupted step without duplicate completion evidence. When a transcript record supplies session, conversation, generation, cwd, workspace, or surface identity, every value must match the hook identity and supervisor mapping; foreign records are rejected before filtering. A `stop`/hook `error` or `aborted` status is latched in the per-job bridge state, and all later callbacks remain failed closed even if they report success. Its per-job result at `${CMUX_AGENT_RUNTIME}/jobs/${job_nonce}/cursor.pty-result.ndjson` is the authoritative content source. The bridge event sink is a wakeup/identity source, not a completion proof. Inside Cursor hook processes, the supervisor passes the per-job runtime as `CMUX_AGENT_JOB_RUNTIME`; Cursor reserves/overwrites the common `CMUX_AGENT_RUNTIME` name.
 
@@ -310,7 +310,7 @@ The Cursor profile advertises an optional bounded local LLM advisor command at `
 
 ```bash
 mkdir -p "$CMUX_AGENT_CONFIG/bin"
-cp "$repo/docs/examples/cursor-advisor.sh" \
+cp "$repo/adapters/cursor/cursor-advisor.sh" \
    "$CMUX_AGENT_CONFIG/bin/cursor-advisor.sh"
 chmod +x "$CMUX_AGENT_CONFIG/bin/cursor-advisor.sh"
 ```
@@ -319,18 +319,18 @@ The watcher invokes the configured advisor only after **15 seconds of quiet** fo
 
 Only an exact displayed command from the question may be recommended as `decision: approve`. The advisor and watcher delegate command validation to the single authoritative `tools/cmux-agent-command-policy.py` `routine-command-v2` adapter, using the supervisor's canonical cwd and declared scope; they do not carry an independent allowlist. For Git reads, that validator also performs a bounded non-executing configuration preflight and escalates active external-diff, fsmonitor, pager, textconv/filter, hooks, repository-redirect, or helper-environment settings; it never invokes Git or a configured helper while checking. Explicit `--no-ext-diff`, `--no-textconv`, and `--no-pager` disable only their matching helper class. Shell operators, substitution, chaining, malformed quoting, unknown commands, out-of-scope paths, network/write/topology operations, and command text that is not exact are not routine. Mandatory escalation categories are `destructive`, `credential`, `deployment`, `external-network`, `ambiguous`, and `important` (including trust/authorization, authentication, spending, irreversible, or scope-expanding decisions). The watcher overrides an unsafe advisor approval into escalation. An unavailable, timed-out, malformed, or otherwise invalid policy/advisor response fails closed and escalates; an unconfigured optional advisor is simply disabled.
 
-For hook setup, copy the bridge and stop adapters to the selected user or disposable project hook directory and merge the relevant entries from `docs/examples/cursor-hooks.json` without replacing unrelated hooks. User commands are relative to `${HOME}/.cursor`; project commands are relative to `.cursor`. The project-relative command is `.cursor/hooks/cursor-transcript-bridge.sh`; do not substitute `${CMUX_AGENT_CONFIG}` for either path. The hook template uses a bounded five-second timeout.
+For hook setup, copy the bridge and stop adapters to the selected user or disposable project hook directory and merge the relevant entries from `adapters/cursor/cursor-hooks.json` without replacing unrelated hooks. User commands are relative to `${HOME}/.cursor`; project commands are relative to `.cursor`. The project-relative command is `.cursor/hooks/cursor-transcript-bridge.sh`; do not substitute `${CMUX_AGENT_CONFIG}` for either path. The hook template uses a bounded five-second timeout.
 
 ## agy compatibility profile
 
-`docs/examples/executor-profile.agy.json` moves the existing agy-specific launch and result details out of the common skill while retaining the old caller alias. On a machine that provides the existing local files, the profile uses:
+`adapters/agy/executor-profile.agy.json` moves the existing agy-specific launch and result details out of the common skill while retaining the old caller alias. On a machine that provides the existing local files, the profile uses:
 
 - the explicit `~/bin/agy-with-permissions` wrapper (which expands to the intended dangerous-mode invocation);
 - the existing `agy-result-hook` as a `PostInvocation` hook, not a `PreInvocation` hook;
 - `~/agi-result.txt` as the result transcript source; and
 - the same nonce-framed markers, explicit cmux surface routing, bounded timeout, artifact checks, and idle corroboration as every profile.
 
-The wrapper and adapter templates are provided in `docs/examples/` and placed locally by the operator; this repository does not silently modify user hooks. A missing wrapper or adapter remains a pre-launch failure, not permission to fall back to another CLI or to screen-only evidence. The agy profile is compatibility support, not a second supervisor.
+The wrapper and adapter templates are provided in `adapters/agy/` and placed locally by the operator; this repository does not silently modify user hooks. A missing wrapper or adapter remains a pre-launch failure, not permission to fall back to another CLI or to screen-only evidence. The agy profile is compatibility support, not a second supervisor.
 
 The machine represented by this record has `cmux`, Cursor `agent`, and agy with the wrapper, adapter, result source, and `PostInvocation` registration. Live agy validation evidence is recorded below; on any other machine without an installed agy wrapper or adapter, agy remains unselected and the profile fails closed.
 
@@ -377,7 +377,7 @@ bash tests/cmux-agent-orchestration-contract.sh
 bash tests/executor-profile-contract.sh
 bash tests/agy-executor-contract.sh
 bash tests/cursor-transcript-bridge-contract.sh
-bash -n tests/*.sh docs/examples/*.sh
+bash -n tests/*.sh adapters/cursor/*.sh adapters/agy/*.sh
 python3 -m json.tool <each changed JSON file>
 git diff --check
 ```

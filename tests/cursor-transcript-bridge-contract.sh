@@ -3,12 +3,12 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-examples="$root/docs/examples"
-bridge="$examples/cursor-transcript-bridge.sh"
-watcher="$examples/cursor-result-watcher.sh"
-advisor="$examples/cursor-advisor.sh"
-profile="$examples/executor-profile.cursor.json"
-hooks="$examples/cursor-hooks.json"
+adapter_dir="$root/adapters/cursor"
+bridge="$adapter_dir/cursor-transcript-bridge.sh"
+watcher="$adapter_dir/cursor-result-watcher.sh"
+advisor="$adapter_dir/cursor-advisor.sh"
+profile="$adapter_dir/executor-profile.cursor.json"
+hooks="$adapter_dir/cursor-hooks.json"
 [[ -x "$bridge" ]]
 [[ -x "$watcher" ]]
 [[ -x "$advisor" ]]
@@ -909,17 +909,17 @@ grep -Fq '"category":"advisor-failure"' "$advisor_runtime/advisor-malformed.out"
 # Existing stop adapter remains additive and returns a valid hook response.
 stop_runtime=$(mktemp -d "${TMPDIR:-/tmp}/cmux-cursor-stop-contract.XXXXXX")
 valid='{"hook_event_name":"stop","status":"completed","conversation_id":"conversation-stop","generation_id":"generation-stop","session_id":"session-stop","transcript_path":null}'
-response=$(printf '%s\n' "$valid" | CMUX_AGENT_RUNTIME="$stop_runtime/wrong-runtime" CMUX_AGENT_JOB_RUNTIME="$stop_runtime" "$examples/cursor-stop-notify.sh")
+response=$(printf '%s\n' "$valid" | CMUX_AGENT_RUNTIME="$stop_runtime/wrong-runtime" CMUX_AGENT_JOB_RUNTIME="$stop_runtime" "$adapter_dir/cursor-stop-notify.sh")
 [[ "$response" == '{}' ]]
 grep -Fq '"hook_event_name":"stop"' "$stop_runtime/events/cursor-stop.ndjson"
-if printf '%s\n' '{"hook_event_name":"beforeSubmitPrompt"}' | CMUX_AGENT_RUNTIME="$stop_runtime/wrong-runtime" CMUX_AGENT_JOB_RUNTIME="$stop_runtime" "$examples/cursor-stop-notify.sh" >/dev/null 2>&1; then
+if printf '%s\n' '{"hook_event_name":"beforeSubmitPrompt"}' | CMUX_AGENT_RUNTIME="$stop_runtime/wrong-runtime" CMUX_AGENT_JOB_RUNTIME="$stop_runtime" "$adapter_dir/cursor-stop-notify.sh" >/dev/null 2>&1; then
   echo 'stop adapter accepted a non-stop event' >&2
   exit 1
 fi
 rm -rf "$stop_runtime"
 
-if grep -Eq '/Users/|/home/|/private/|secret|bearer|api[_-]?key|token' "$examples"/*.json "$examples"/*.sh; then
-  echo 'Cursor examples leaked private configuration' >&2
+if grep -Eq '/Users/|/home/|/private/|secret|bearer|api[_-]?key|token' "$adapter_dir"/*.json "$adapter_dir"/*.sh; then
+  echo 'Cursor adapter templates leaked private configuration' >&2
   exit 1
 fi
 
