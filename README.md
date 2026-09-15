@@ -1,13 +1,13 @@
 # cmux agent integration
 
-This repository provides a small Pi skill for delegating one bounded task to a
-headless coding CLI in a visible [cmux](https://github.com/manaflow-ai/cmux)
-pane. Cursor, agy, and other CLIs are selected through explicit machine-local
-executor profiles.
+This repository provides a framework-neutral `cmux-agent` skill for delegating
+one bounded task to a headless coding CLI in a visible
+[cmux](https://github.com/manaflow-ai/cmux) pane. Cursor, agy, and other CLIs
+are selected through explicit machine-local executor profiles.
 
-The delegated worker uses the `cmux-agent-orchestration` skill to create a pane,
-launch the configured process, check the result, and report evidence to the
-main agent. The main agent owns the final review and verification.
+A host agent loads the skill to create a pane, launch the configured process,
+check the result, and report evidence. The calling agent owns the final review
+and verification; this repository does not require a particular agent host.
 
 ## Quick start
 
@@ -30,17 +30,16 @@ bash tools/cmux-agent-setup.sh --profile cursor --check
 ```
 
 Use `--profile agy` or `--profile both` to install the corresponding profile
-templates. Add `--with-pi` only when explicitly installing the project agent and
-skill into the global Pi directory. Setup never edits shell startup files,
-Cursor/agy hooks, credentials, transcripts, or timeline files.
+templates. Setup never edits shell startup files, Cursor/agy hooks, credentials,
+transcripts, or timeline files.
 
 ## How it works
 
 ```text
-main Pi agent
+calling agent
     │ delegates a bounded task
     ▼
-cmux-agent worker + orchestration skill
+cmux-agent skill + worker
     │ reuses the cmux-agent workspace
     ├── creates a fresh project-labelled surface
     ├── launches a profile-selected headless CLI through cmux-agent-run.py
@@ -48,12 +47,13 @@ cmux-agent worker + orchestration skill
     └── checks declared artifacts and focused checks
     │ reports evidence
     ▼
-main Pi agent independently reviews the worktree and accepts or rejects it
+calling agent independently reviews the worktree and accepts or rejects it
 ```
 
 The cmux pane is the execution location and human-visible diagnostic surface.
-It is not a result protocol. The runner starts the child without a shell, passes the task using the
-profile's stdin or prompt-argument mode, and enforces a process-group timeout.
+It is not a result protocol. The runner starts the child without a shell, passes
+the task using the profile's stdin or prompt-argument mode, and enforces a
+process-group timeout.
 
 ## Job evidence
 
@@ -73,7 +73,7 @@ timeout/termination state, task/output hashes, and whether the nonce-framed
 completion marker was observed. It does not store task text.
 
 A successful process or marker is not enough. The worker checks the expected
-artifact and focused checks, and the main agent independently reviews the
+artifact and focused checks, and the calling agent independently reviews the
 actual worktree. Raw output captures are diagnostic artifacts and remain
 machine-local.
 
@@ -89,8 +89,8 @@ machine-local.
 - Cwd and optional worktree identity are validated before launch.
 - The runner uses `subprocess` with `shell=False` and a separate process group.
 - Timeouts terminate the process group and preserve the captured evidence.
-- Approval/question/error/scope problems are reported to the main agent rather
-  than answered or approved by guesswork.
+- Approval/question/error/scope problems are reported to the calling agent
+  rather than answered or approved by guesswork.
 - No Cursor transcript directory scanning, hook registration, screen scraping,
   interactive watcher, or provider-specific lifecycle adapter is used.
 
@@ -103,17 +103,43 @@ external services.
 Checked-in templates are portable examples, not personal machine state:
 
 - `adapters/cursor/executor-profile.cursor.json` — Cursor
-  `agent --print --output-format stream-json --trust` with a prompt argument.
+  `agent --print --output-format stream-json --sandbox enabled --trust` with a
+  prompt argument.
 - `adapters/agy/executor-profile.agy.json` — agy headless profile shape; add
   product-specific headless flags only in the machine-local copy after
   confirming them against the installed product.
 
 See [`docs/executor-profiles.md`](docs/executor-profiles.md) for the schema and
-setup details. The generic worker is
-[`.pi/agents/cmux-agent.md`](.pi/agents/cmux-agent.md), and its skill is
-[`skills/cmux-agent-orchestration/SKILL.md`](skills/cmux-agent-orchestration/SKILL.md).
-The official `cmux` and `cmux-workspace` skills remain external prerequisites;
-this repository does not duplicate pane-control logic.
+setup details. The reusable skill is
+[`.agents/skills/cmux-agent/SKILL.md`](.agents/skills/cmux-agent/SKILL.md). A host
+such as Pi can load it for a prompt such as “use a subagent with skill
+cmux-agent and cursor to create a Go hello-world file in a temporary folder”;
+other agent hosts can use the same skill and profiles. The official `cmux` and
+`cmux-workspace` skills remain external prerequisites; this repository does not
+duplicate pane-control logic.
+
+## Using from an agent host
+
+This repository contains no host-specific agent manifest. Hosts that support the
+Agent Skills layout can discover `.agents/skills/cmux-agent` after the project
+is trusted. In Pi, an explicit path also works:
+
+```bash
+pi --skill "$PWD/.agents/skills/cmux-agent/SKILL.md"
+```
+
+Then use a bounded prompt such as:
+
+```text
+Use a subagent with the `cmux-agent` skill and the `cursor` executor profile.
+In /tmp/cmux-hello, create hello.go as a minimal Go Hello World program.
+Only modify /tmp/cmux-hello. Verify the file contents and run gofmt -d
+/tmp/cmux-hello/hello.go and go run /tmp/cmux-hello/hello.go.
+```
+
+The host supplies the worker/subagent mechanism; this repository supplies the
+skill, runner, and executor profiles. The calling host remains responsible for
+final verification.
 
 ## Historical interactive implementation
 
@@ -126,8 +152,7 @@ current tree.
 
 ## Repository map
 
-- `skills/cmux-agent-orchestration/SKILL.md` — headless cmux worker workflow.
-- `.pi/agents/cmux-agent.md` — project-scoped delegated worker definition.
+- `.agents/skills/cmux-agent/SKILL.md` — framework-neutral headless cmux worker workflow.
 - `tools/cmux-agent-run.py` — shell-free process runner and result manifest.
 - `tools/cmux-agent-setup.sh` — explicit plan/apply/check setup.
 - `adapters/` — portable headless profile templates.
@@ -140,7 +165,7 @@ current tree.
 
 ```bash
 bash tests/cmux-agent-run-contract.sh
-bash tests/cmux-agent-orchestration-contract.sh
+bash tests/cmux-agent-contract.sh
 bash tests/executor-profile-contract.sh
 bash tests/cmux-agent-setup-contract.sh
 bash tests/cmux-agent-capability-protocol-contract.sh

@@ -3,10 +3,10 @@
 ## Decision
 
 `cmux-agent` uses headless CLI processes only. A delegated worker uses the
-`cmux-agent-orchestration` skill to open a fresh surface in the shared
+`cmux-agent` skill to open a fresh surface in the shared
 `cmux-agent` workspace, run one explicitly selected profile, check the result,
-and report evidence to the main agent. The main agent owns the final review and
-verification.
+and report evidence to the calling agent. The calling agent owns the final
+review and verification.
 
 The cmux surface provides visibility and a stable execution location. It is not
 a result channel. Headless stdout/stderr and the runner-owned `result.json` are
@@ -51,7 +51,9 @@ git worktree add /tmp/cmux-agent-interactive-reference 33e7eb6
 ```
 
 The redesign deliberately keeps that history in Git rather than copying the
-old code into a compatibility directory.
+old code into a compatibility directory. The optional capability protocol also
+uses the generic `direct` route name; the former Pi-specific `direct_pi` value
+is intentionally not accepted.
 
 ## Runtime contract
 
@@ -81,7 +83,7 @@ $CMUX_AGENT_RUNTIME/jobs/<job_nonce>/
 `result.json` records identity, timestamps, duration, exit status, timeout and
 termination state, task/output hashes, and whether the expected marker was
 observed. It never stores the task text. A successful process and marker do not
-prove the task: the worker and main agent must inspect the expected artifact
+prove the task: the worker and calling agent must inspect the expected artifact
 and run focused checks.
 
 ## Safety boundary
@@ -95,13 +97,13 @@ the supervisor never adds force/yolo/dangerous flags.
 
 Headless CLIs may not offer interactive approval prompts. If the selected
 profile cannot safely express the requested task, or the output reports an
-approval/question/error condition, the worker stops and escalates to the main
+approval/question/error condition, the worker stops and escalates to the calling
 agent instead of guessing.
 
 ## Verification
 
 The worker reports the result manifest, captured output paths/hashes, cmux
-workspace/surface, artifact evidence, and focused-check exit codes. The main
+workspace/surface, artifact evidence, and focused-check exit codes. The calling
 agent independently reviews the worktree and repeats the important checks.
 
 No transcript scan or timeline view is required for this path. A future

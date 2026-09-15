@@ -1,7 +1,7 @@
 # Headless executor profiles
 
 Profiles make the command choice explicit without putting CLI-specific launch
-logic in the `cmux-agent-orchestration` skill. Profiles are machine-local
+logic in the `cmux-agent` skill. Profiles are machine-local
 configuration; the checked-in files under `adapters/` are portable templates.
 
 The current design supports only `mode: headless`. Interactive Cursor/agy
@@ -81,7 +81,7 @@ marker is not sufficient without artifact and focused-check evidence.
 uses:
 
 ```text
-agent --print --output-format stream-json
+agent --print --output-format stream-json --sandbox enabled --trust
 ```
 
 The prompt is supplied as one argv value because Cursor's `agent --print`
@@ -118,7 +118,7 @@ it does not contain task text.
 The worker uses the official `cmux` and `cmux-workspace` skills to create a new
 surface in the shared `cmux-agent` workspace and invokes the runner there. The
 surface is explicitly addressed by workspace and surface ID, but screen output
-is not parsed as a result. The main agent independently verifies the actual
+is not parsed as a result. The calling agent independently verifies the actual
 worktree and declared checks.
 
 ## Setup
@@ -131,8 +131,7 @@ bash tools/cmux-agent-setup.sh --profile cursor --apply
 bash tools/cmux-agent-setup.sh --profile cursor --check
 ```
 
-Use `--profile agy` or `--profile both` for the other template. Add
-`--with-pi` only when installing the project agent and skill globally. Setup
-creates only selected profile/runtime/bin directories and files; it does not
+Use `--profile agy` or `--profile both` for the other template. Setup creates
+only selected profile/runtime/bin directories and files; it does not
 edit Cursor/agy hooks, shell startup files, credentials, or timeline state.
 `--check` never writes.

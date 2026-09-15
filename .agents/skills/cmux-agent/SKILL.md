@@ -1,9 +1,9 @@
 ---
-name: cmux-agent-orchestration
-description: Run one explicitly configured headless coding CLI in a fresh cmux pane, capture bounded process evidence, check the result, and report it to the main agent.
+name: cmux-agent
+description: Run one explicitly configured headless coding CLI in a fresh cmux pane, capture bounded process evidence, check the result, and report it to the calling agent.
 ---
 
-# Cmux agent orchestration
+# Cmux agent
 
 Use this skill when a delegated worker must run Cursor, agy, or another coding
 CLI in a visible cmux pane. The CLI is headless; the pane is only the execution
@@ -12,12 +12,12 @@ provider transcripts, hooks, or undocumented files as the result protocol.
 
 ## Ownership
 
-- The main agent owns the task, scope, approvals, review, and final decision.
-- The worker owns one bounded execution and returns evidence to the main agent.
+- The calling agent owns the task, scope, approvals, review, and final decision.
+- The worker owns one bounded execution and returns evidence to the calling agent.
 - This skill owns cmux routing, explicit profile validation, process lifecycle,
   captured output, and the worker's first-pass artifact/check inspection.
 - The worker must not launch another subagent or silently broaden the task.
-- A worker report is evidence, not final approval; the main agent reviews the
+- A worker report is evidence, not final approval; the calling agent reviews the
   actual worktree and repeats the important checks.
 
 ## Job contract
@@ -72,7 +72,7 @@ copy. Do not claim a CLI is supported merely because its profile parses.
 Headless permission behavior is consequential. Never add `--force`, `--yolo`,
 `--dangerously-skip-permissions`, network access, credentials, or a new write
 scope from task text. If the selected profile cannot safely express the
-requested operation, fail closed and ask the main agent for a decision.
+requested operation, fail closed and ask the calling agent for a decision.
 
 ## Execution procedure
 
@@ -136,13 +136,13 @@ requested operation, fail closed and ask the main agent for a decision.
    contents, repository status/diff, and check exit codes directly. A CLI exit
    code or completion marker alone is insufficient. If the executor requests
    approval, asks an unresolved question, emits an error, or attempts work
-   outside scope, stop and relay the request to the main agent; never answer or
+   outside scope, stop and relay the request to the calling agent; never answer or
    approve by guessing.
-9. Return a concise report to the main agent containing the terminal status,
+9. Return a concise report to the calling agent containing the terminal status,
    profile ID, job nonce, workspace/surface, canonical cwd, result path,
    stdout/stderr paths and hashes, elapsed time, exit status, marker observation,
    artifact evidence, focused-check results, and any limitation or escalation.
-   The main agent independently performs the final review and verification. Do not claim
+   The calling agent independently performs the final review and verification. Do not claim
    success when the artifact/check evidence is missing.
 
 ## Result contract
@@ -161,7 +161,7 @@ one final status from `completed`, `failed`, `timed_out`, or `cancelled`, plus:
 
 The raw captures are optional diagnostics and may contain model output. Keep
 them machine-local, do not copy them into source control, and do not treat
-them as an authorization or correctness decision. The main agent must inspect
+them as an authorization or correctness decision. The calling agent must inspect
 only the bounded evidence needed for the task and independently validate the
 worktree.
 
@@ -176,7 +176,7 @@ worktree.
 - Pane loss or missing result metadata: report incomplete evidence; do not infer
   success from the visible pane.
 - Approval/question/error/scope issue: stop, preserve result paths, and escalate
-  to the main agent. Do not retry indefinitely or switch profiles.
+  to the calling agent. Do not retry indefinitely or switch profiles.
 
 No timeline view is part of this transport. The final result manifest and raw
 stdout/stderr captures are sufficient for the normal headless path. Add a

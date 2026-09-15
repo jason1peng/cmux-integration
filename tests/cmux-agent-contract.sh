@@ -2,12 +2,11 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
-skill="$root/skills/cmux-agent-orchestration/SKILL.md"
-agent="$root/.pi/agents/cmux-agent.md"
+skill="$root/.agents/skills/cmux-agent/SKILL.md"
 index="$root/docs/index.md"
 design="$root/docs/headless-executor.md"
 
-[[ -s "$skill" && -s "$agent" && -s "$index" && -s "$design" ]]
+[[ -s "$skill" && -s "$index" && -s "$design" ]]
 
 for contract in \
   'mode: headless' \
@@ -25,23 +24,12 @@ for contract in \
   'job_nonce' \
   'artifact' \
   'focused checks' \
-  'main agent independently' \
+  'calling agent independently' \
   'force' \
   'yolo' \
   'shell interpolation' \
   'No timeline view'; do
   grep -Fq -- "$contract" "$skill"
-done
-
-for contract in \
-  'cmux-agent workspace' \
-  'fresh' \
-  'headless CLI' \
-  'cmux-agent-run.py' \
-  'result.json' \
-  'main agent must independently review' \
-  'Never launch a nested subagent'; do
-  grep -Fq -- "$contract" "$agent"
 done
 
 for obsolete in \
@@ -53,7 +41,7 @@ for obsolete in \
   'cmux-agent.timeline' \
   'tools/cmux-agent-timeline.py' \
   'cursor-hooks.json'; do
-  if grep -RIn --exclude-dir=.git -- "$obsolete" "$skill" "$agent" "$index"; then
+  if grep -RIn --exclude-dir=.git -- "$obsolete" "$skill" "$index"; then
     echo "obsolete interactive reference found: $obsolete" >&2
     exit 1
   fi
@@ -68,10 +56,9 @@ for path in \
   [[ ! -e "$path" ]] || { echo "obsolete path remains: $path" >&2; exit 1; }
 done
 
-# The worker is deliberately not an orchestrator of other Pi subagents.
-grep -Fq -- 'maxSubagentDepth: 0' "$agent"
-if grep -Fq -- 'tools: subagent' "$agent"; then
-  echo 'worker unexpectedly has subagent tooling' >&2
+# The reusable skill carries no host-specific subagent binding.
+if grep -RIn --exclude-dir=.git -E 'maxSubagentDepth|skillPath:|systemPromptMode:' "$root/.agents/skills"; then
+  echo 'host-specific agent binding found in reusable skills' >&2
   exit 1
 fi
 
@@ -81,6 +68,7 @@ for text in \
   'docs/executor-profiles.md' \
   'tools/cmux-agent-run.py' \
   'tests/cmux-agent-run-contract.sh' \
+  '.agents/skills/cmux-agent/SKILL.md' \
   'timeline view'; do
   grep -Fqi -- "$text" "$index"
 done
@@ -89,4 +77,4 @@ grep -Fq -- '33e7eb6' "$design"
 grep -Fq -- '093951b' "$design"
 "$root/tools/cmux-agent-run.py" --help >/dev/null
 
-echo "cmux-agent orchestration contract: PASS"
+echo "cmux-agent contract: PASS"

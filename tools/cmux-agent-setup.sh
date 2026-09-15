@@ -9,17 +9,15 @@ set -euo pipefail
 repo=$(cd "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 profile=""
 mode="plan"
-with_pi=0
 
 usage() {
   cat <<'EOF'
-Usage: tools/cmux-agent-setup.sh --profile cursor|agy|both [--apply|--check] [--with-pi]
+Usage: tools/cmux-agent-setup.sh --profile cursor|agy|both [--apply|--check]
 
 Default mode prints a read-only plan. --apply asks before writing. --check is
 read-only and exits non-zero until the selected setup is ready.
 
 --profile cursor|agy|both  Required explicit executor selection.
---with-pi                   Install the global Pi agent and orchestration skill.
 EOF
 }
 
@@ -45,14 +43,6 @@ while [[ $# -gt 0 ]]; do
       [[ "$mode" == plan ]] || { echo "setup: --apply and --check are mutually exclusive" >&2; exit 2; }
       mode=check
       shift
-      ;;
-    --with-pi)
-      with_pi=1
-      shift
-      ;;
-    --advisor)
-      echo "setup: --advisor was removed with the interactive transport" >&2
-      exit 2
       ;;
     --help|-h)
       usage
@@ -84,7 +74,6 @@ import shutil
 import stat
 import sys
 import tempfile
-from typing import Any
 
 
 class SetupError(Exception):
@@ -94,7 +83,6 @@ class SetupError(Exception):
 repo = Path(sys.argv[1]).absolute()
 selected = sys.argv[2]
 mode = sys.argv[3]
-with_pi = sys.argv[4] == "1"
 
 
 def absolute_path(value: str) -> Path:
@@ -220,8 +208,6 @@ sources = {
     "runner": repo / "tools" / "cmux-agent-run.py",
     "cursor": repo / "adapters" / "cursor" / "executor-profile.cursor.json",
     "agy": repo / "adapters" / "agy" / "executor-profile.agy.json",
-    "agent": repo / ".pi" / "agents" / "cmux-agent.md",
-    "skill": repo / "skills" / "cmux-agent-orchestration" / "SKILL.md",
 }
 source_data: dict[str, bytes] = {}
 for key in ("runner", "cursor" if wants("cursor") else None, "agy" if wants("agy") else None):
@@ -231,11 +217,6 @@ if wants("cursor"):
     source_data["cursor"] = validate_profile(source_data["cursor"], sources["cursor"], "cursor")
 if wants("agy"):
     source_data["agy"] = validate_profile(source_data["agy"], sources["agy"], "agy")
-if with_pi:
-    source_data["agent"] = read_source(sources["agent"])
-    source_data["skill"] = read_source(sources["skill"])
-
-
 directories = [
     DirectoryItem("profile directory", profile_dir),
     DirectoryItem("runtime directory", runtime),
@@ -249,22 +230,6 @@ if wants("cursor"):
     items.append(FileItem("Cursor headless profile", profile_dir / "cursor.json", source_data["cursor"], mode_bits(sources["cursor"])))
 if wants("agy"):
     items.append(FileItem("agy headless profile", profile_dir / "agy.json", source_data["agy"], mode_bits(sources["agy"])))
-if with_pi:
-    pi_root = home / ".pi" / "agent"
-    directories.extend([
-        DirectoryItem("global Pi directory", pi_root),
-        DirectoryItem("global Pi agents directory", pi_root / "agents"),
-        DirectoryItem("global Pi skill directory", pi_root / "skills" / "cmux-agent-orchestration"),
-    ])
-    agent_data = source_data["agent"].replace(b"skillPath: ../../skills", b"skillPath: ../skills")
-    if agent_data == source_data["agent"]:
-        raise SetupError("unexpected skillPath in Pi agent source")
-    items.extend([
-        FileItem("global Pi supervisor agent", pi_root / "agents" / "cmux-agent.md", agent_data, mode_bits(sources["agent"])),
-        FileItem("global Pi orchestration skill", pi_root / "skills" / "cmux-agent-orchestration" / "SKILL.md", source_data["skill"], mode_bits(sources["skill"])),
-    ])
-
-
 agent_ready = shutil.which("agent") is not None
 agy_ready = shutil.which("agy") is not None
 
@@ -401,4 +366,4 @@ except (OSError, ValueError) as exc:
     print(f"setup: operation failed safely: {exc}", file=sys.stderr)
     raise SystemExit(2)
 PY
-python3 "$python_script" "$repo" "$profile" "$mode" "$with_pi"
+python3 "$python_script" "$repo" "$profile" "$mode"

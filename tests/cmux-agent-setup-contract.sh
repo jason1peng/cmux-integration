@@ -35,20 +35,8 @@ printf 'y\n' | bash "$root/tools/cmux-agent-setup.sh" --profile cursor --apply >
 [[ ! -e "$HOME/.cursor/hooks.json" ]]
 [[ ! -e "$HOME/.gemini/config/hooks.json" ]]
 
-# Global Pi resources remain an explicit opt-in and use the documented path rewrite.
-printf 'y\n' | bash "$root/tools/cmux-agent-setup.sh" --profile cursor --with-pi --apply >"$sandbox/pi-apply.txt"
-[[ -f "$HOME/.pi/agent/agents/cmux-agent.md" ]]
-[[ -f "$HOME/.pi/agent/skills/cmux-agent-orchestration/SKILL.md" ]]
-grep -Fq -- 'skillPath: ../skills' "$HOME/.pi/agent/agents/cmux-agent.md"
-
 bash "$root/tools/cmux-agent-setup.sh" --profile cursor --check >"$sandbox/check-after.txt"
 grep -Fq -- 'CHECK READY: selected setup is complete.' "$sandbox/check-after.txt"
-
-# Removed options cannot silently reinstall the old interactive transport.
-if bash "$root/tools/cmux-agent-setup.sh" --profile cursor --advisor >/dev/null 2>&1; then
-  echo '--advisor unexpectedly accepted' >&2
-  exit 1
-fi
 
 # Existing symlink destinations are refused before a plan can write through them.
 rm -rf -- "$CMUX_AGENT_PROFILE_DIR"

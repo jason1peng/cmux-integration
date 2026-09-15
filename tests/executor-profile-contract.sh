@@ -85,9 +85,8 @@ for removed in (
 ):
     assert not (root / "adapters/agy" / removed).exists(), removed
 
-skill = (root / "skills/cmux-agent-orchestration/SKILL.md").read_text()
-agent = (root / ".pi/agents/cmux-agent.md").read_text()
-for text in (skill, agent):
+skill = (root / ".agents/skills/cmux-agent/SKILL.md").read_text()
+for text in (skill,):
     assert "headless" in text
     assert "cmux-agent" in text
     assert "result.json" in text
@@ -96,8 +95,7 @@ for text in (skill, agent):
     assert "cursor-transcript-bridge" not in text
     assert "cursor-result-watcher" not in text
     assert "agy-hook-notify" not in text
-assert "Never launch a nested subagent" in agent
-assert "main agent must independently review" in agent
+assert "calling agent" in skill
 
 print("executor profile contract: PASS")
 PY
