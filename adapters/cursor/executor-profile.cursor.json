@@ -1,198 +1,44 @@
 {
   "profile_id": "cursor",
   "schema_version": 1,
-  "capability_policy_version": 1,
-  "capability_adapter": {
-    "required": true,
-    "version": 1,
-    "discovery": ["local_skill_metadata", "mcp_metadata"],
-    "request_transport": "profile-owned-transcript",
-    "readiness": "supervisor-verifies-manifest-and-task-digests",
-    "version_skew_reason": "capability-protocol-version-skew"
-  },
   "launch": {
     "command": "agent",
     "argv": [
+      "--print",
+      "--output-format",
+      "stream-json",
+      "--sandbox",
+      "enabled",
       "--trust"
     ],
-    "mode": "interactive",
-    "permission_mode": "explicit-trust",
+    "mode": "headless",
+    "input": "prompt-arg",
+    "permission_mode": "cli-default",
     "dangerous": false,
     "force": false,
     "yolo": false
   },
+  "sandbox": "enabled",
+  "network": "enabled",
+  "write_scope": ["cwd"],
   "cwd": {
     "binding": "contract",
     "canonicalize": "pwd -P"
   },
-  "probes": {
-    "ready": {
-      "kind": "screen",
-      "description": "Cursor identity/header plus interactive input-ready prompt accepting a new message; a generic shell prompt, launch error, or pasted-but-unsubmitted input is not ready"
-    },
-    "idle": {
-      "kind": "screen",
-      "description": "Cursor interactive follow-up/idle prompt after a settled turn"
-    },
-    "question": {
-      "kind": "screen",
-      "description": "Cursor trust, authorization, approval, or other decision prompt"
-    }
-  },
-  "transport": {
-    "prompt": {
-      "kind": "cmux-send",
-      "requires_workspace": true,
-      "requires_surface": true,
-      "submit_key": "ctrl+enter",
-      "encoding": "interactive-tui"
-    },
-    "continuation": {
-      "kind": "cmux-send",
-      "requires_workspace": true,
-      "requires_surface": true,
-      "submit_key": "ctrl+enter",
-      "encoding": "interactive-tui"
-    }
-  },
-  "transcript": {
-    "source": "${CMUX_AGENT_RUNTIME}/jobs/${job_nonce}/cursor.pty-result.ndjson",
-    "kind": "hook-provided-cursor-jsonl",
-    "freshness": "supervisor mapping source.path, source.start_offset, source.launch_mtime_ns, source.exists_at_launch, and source.created_after_launch are required for every source; source.path is canonical absolute and a source created after launch starts at zero, while an existing source may start at its recorded launch size including zero; existing sources require device/inode/size/mtime identity; reject truncation, replacement, and stale source identity",
-    "prompt_echo_rule": "exclude user records and exact or segment prompt echoes; reject markers present only in submitted input, reflected prompt echo, or screen text",
-    "authoritative_content": "only fresh assistant/tool records normalized from the first usable hook-provided transcript_path",
-    "bridge": {
-      "required": true,
-      "status": "additive hook observations and transcript capture",
-      "command": "${HOME}/.cursor/hooks/cursor-transcript-bridge.sh",
-      "mapping": "${CMUX_AGENT_RUNTIME}/jobs/${job_nonce}/cursor.mapping.json",
-      "event_sink": "${CMUX_AGENT_RUNTIME}/events/cursor-transcript-bridge.ndjson",
-      "events": [
-        "sessionStart",
-        "beforeSubmitPrompt",
-        "afterAgentThought",
-        "afterFileEdit",
-        "afterShellExecution",
-        "afterAgentResponse",
-        "stop"
-      ],
-      "path_rule": "capture the first usable non-null CURSOR_TRANSCRIPT_PATH or transcript_path supplied by a correlated hook only when it exactly matches supervisor mapping source.path; null or future paths are observations only; never scan undocumented Cursor directories",
-      "normalization": "fresh complete JSONL records after the supervisor boundary; preserve source offsets; exclude user records and exact/segment prompt echoes; deduplicate semantic replay; stage result/event evidence durably and commit the source cursor only after both sinks, with idempotent crash/replay recovery; reject malformed/truncated/replaced/uncorrelated sources"
-    }
-  },
-  "watcher": {
-    "command": "${CMUX_AGENT_CONFIG}/bin/cursor-result-watcher.sh",
-    "protocol": "ndjson-state-change",
-    "sink": "${CMUX_AGENT_RUNTIME}/jobs/${job_nonce}/cursor.watcher.ndjson",
-    "advisor_sink": "${CMUX_AGENT_RUNTIME}/jobs/${job_nonce}/cursor.advisor.ndjson",
-    "poll_interval_ms": 250,
-    "poll_strategy": "stat identity plus persisted byte cursors; bounded appended NDJSON reads only",
-    "max_append_read_bytes": 262144,
-    "attention_after_seconds": 5,
-    "pane_fallback_after_seconds": 5,
-    "pane_poll_interval_seconds": 1,
-    "classifications": [
-      "REQUIRE_ATTENTION",
-      "QUESTION",
-      "IDLE",
-      "WORKING",
-      "LOST",
-      "UNKNOWN"
-    ],
-    "quiet_rule": "after five seconds without correlated result/event activity, emit REQUIRE_ATTENTION with bounded pane evidence; quiet is ambiguous and never completion; re-read the pane at most once per second while quiet persists",
-    "pane_rule": "read only the exact recorded workspace/surface after five seconds without result activity; pane state is corroboration for the LLM/supervisor and explicit follow-up/idle corroboration is required; no automatic approvals",
-    "advisor": {
-      "enabled": "optional",
-      "kind": "bounded-local-llm-advisor",
-      "command": "${CMUX_AGENT_CONFIG}/bin/cursor-advisor.sh",
-      "protocol": "strict-json-recommendation",
-      "quiet_trigger_after_seconds": 15,
-      "timeout_seconds": 5,
-      "backoff_seconds": [15, 30, 60],
-      "backoff_cap_seconds": 60,
-      "reset_on": "fresh correlated transcript or bridge-event activity",
-      "policy": "routine-command-v2",
-      "command_policy": "${CMUX_AGENT_CONFIG}/bin/cmux-agent-command-policy.py",
-      "scope_source": "supervisor mapping declared_scope; canonical cwd is supplied separately",
-      "version_skew_reason": "capability-protocol-version-skew",
-      "mandatory_escalation_categories": [
-        "destructive",
-        "credential",
-        "deployment",
-        "external-network",
-        "ambiguous",
-        "important"
-      ],
-      "approval_rule": "only an exact displayed command accepted independently by the bounded read-only policy may be recommended as routine; the advisor never sends approval",
-      "failure_rule": "malformed, timed out, unavailable, or non-routine advisor responses fail closed and escalate"
-    }
-  },
-  "supervisor_mapping": {
-    "required": true,
-    "file": "${CMUX_AGENT_RUNTIME}/jobs/${job_nonce}/cursor.mapping.json",
-    "result_protocol": "cursor-hook-bridge",
-    "exports": [
-      "CMUX_AGENT_JOB_NONCE",
-      "CMUX_AGENT_RUNTIME",
-      "CMUX_AGENT_JOB_RUNTIME",
-      "CMUX_AGENT_WORKSPACE",
-      "CMUX_AGENT_SURFACE",
-      "CMUX_AGENT_CWD"
-    ],
-    "ownership": "supervisor-generated and supervisor-validated; job text, profile argv, hook payloads, and pane text cannot override identity"
-  },
   "result": {
-    "marker_rule": "nonce-framed-marker-in-fresh-transcript-result-segment",
+    "format": "stream-json",
+    "completion": "process-exit-and-marker",
+    "require_marker": true,
+    "marker_rule": "the fresh stdout capture contains the job nonce followed by GOAL_COMPLETE; the main agent verifies the artifact and does not trust this flag alone",
     "artifact_checks": [
-      "expected artifact exists",
+      "expected artifact exists and has the requested contents",
       "git diff --check",
       "declared focused checks pass"
-    ],
-    "idle_corroboration": true,
-    "turn_settled_gate": "fresh correlated assistant marker plus artifact/check evidence plus no active question/approval plus explicitly targeted pane at normal follow-up/idle prompt"
+    ]
   },
-  "lifecycle": {
-    "event": "cursor-transcript-bridge",
-    "source": "cursor-hooks-transcript-bridge",
-    "hook_config": "${HOME}/.cursor/hooks.json",
-    "event_sink": "${CMUX_AGENT_RUNTIME}/events/cursor-transcript-bridge.ndjson",
-    "required": true,
-    "acceptable_statuses": [
-      "observed",
-      "success",
-      "completed",
-      "ok"
-    ],
-    "failure_statuses": [
-      "error",
-      "aborted",
-      "failed"
-    ],
-    "correlation": [
-      "job_nonce",
-      "executor_session",
-      "conversation_id",
-      "generation_id",
-      "session_id",
-      "workspace",
-      "surface",
-      "cwd",
-      "transcript_path",
-      "event_id"
-    ],
-    "deduplicate_by": [
-      "event_id",
-      "executor_session",
-      "generation_id"
-    ],
-    "optional_wakeups": [
-      "stop",
-      "afterAgentResponse"
-    ],
-    "optional_stop_status_rule": "stop is a wakeup/status check; stop error or aborted fails closed; missing stop never downgrades transcript, artifact, and idle validation"
-  },
+  "timeout_seconds": 600,
   "stop": {
-    "mode": "profile-command-with-explicit-surface",
+    "mode": "process-group",
     "deadline_seconds": 10
   }
 }
