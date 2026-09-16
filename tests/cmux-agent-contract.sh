@@ -31,9 +31,20 @@ for contract in \
   'shell=False' \
   'process-group' \
   'result.json' \
+  'cmux-agent-wait.py' \
   'stdout.log' \
   'stderr.log' \
   'finite deadline' \
+  'deadline_at_ns' \
+  'stop_deadline_seconds' \
+  'safety margin' \
+  'starting' \
+  'running' \
+  'timed_out' \
+  'finalization checkpoint' \
+  '2–5 minutes' \
+  'exploratory calls' \
+  'operator-directed cancellation' \
   'job_nonce' \
   'artifact' \
   'focused checks' \

@@ -206,11 +206,12 @@ class FileItem:
 
 sources = {
     "runner": repo / "tools" / "cmux-agent-run.py",
+    "waiter": repo / "tools" / "cmux-agent-wait.py",
     "cursor": repo / "adapters" / "cursor" / "executor-profile.cursor.json",
     "agy": repo / "adapters" / "agy" / "executor-profile.agy.json",
 }
 source_data: dict[str, bytes] = {}
-for key in ("runner", "cursor" if wants("cursor") else None, "agy" if wants("agy") else None):
+for key in ("runner", "waiter", "cursor" if wants("cursor") else None, "agy" if wants("agy") else None):
     if key:
         source_data[key] = read_source(sources[key])
 if wants("cursor"):
@@ -235,6 +236,7 @@ directories = [
 ]
 items: list[FileItem] = [
     FileItem("headless runner", bin_dir / "cmux-agent-run.py", source_data["runner"], mode_bits(sources["runner"])),
+    FileItem("result waiter", bin_dir / "cmux-agent-wait.py", source_data["waiter"], mode_bits(sources["waiter"])),
 ]
 if wants("cursor"):
     items.append(FileItem("Cursor headless profile", profile_dir / "cursor.json", source_data["cursor"], mode_bits(sources["cursor"])))

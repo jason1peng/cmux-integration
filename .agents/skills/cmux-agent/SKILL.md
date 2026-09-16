@@ -125,10 +125,14 @@ requested operation, fail closed and ask the calling agent for a decision.
 4. Initialize the executor surface with an explicitly targeted, safely quoted
    `cd -- <cwd>` command and verify `pwd -P` and worktree identity. A `cmux
    send` acknowledgement is not proof that the command ran.
-5. Resolve the machine-local profile and the installed runner
-   `${CMUX_AGENT_RUNNER:-${CMUX_AGENT_CONFIG:-$HOME/.config/cmux-agent}/bin/cmux-agent-run.py}`. The runner
-   must be an executable reviewed copy of `tools/cmux-agent-run.py`; it performs
-   no shell evaluation. Pass the resolved absolute profile path (for example
+5. Resolve the machine-local profile, the installed runner, and the installed
+   result waiter. Use
+   `${CMUX_AGENT_RUNNER:-${CMUX_AGENT_CONFIG:-$HOME/.config/cmux-agent}/bin/cmux-agent-run.py}`
+   and
+   `${CMUX_AGENT_WAIT:-${CMUX_AGENT_CONFIG:-$HOME/.config/cmux-agent}/bin/cmux-agent-wait.py}`.
+   Both must be executable reviewed copies of the corresponding repository
+   tools; the runner performs no shell evaluation and the waiter performs no
+   process termination. Pass the resolved absolute profile path (for example
    `$HOME/.config/cmux-agent/profiles/cursor.json`), not only `cursor`. Validate
    the profile again immediately before launch.
 6. Launch the runner in the recorded surface with every dynamic shell word
@@ -156,12 +160,40 @@ requested operation, fail closed and ask the calling agent for a decision.
    The child receives `CMUX_AGENT_JOB_NONCE`, `CMUX_AGENT_JOB_DIR`,
    `CMUX_AGENT_WORKSPACE`, `CMUX_AGENT_SURFACE`, and `CMUX_AGENT_CWD`. Never use
    `eval`, unquoted concatenation, or `env ... exec`.
-7. Poll only the per-job `result.json` for completion. The pane may be read to
-   diagnose a missing/dead runner, but screen text is never parsed as output or
-   completion. Do not scan provider transcript directories, install hooks, or
-   start a watcher. If the runner remains `running` until the bounded job
-   deadline, terminate the process group and report `timed_out`.
-8. When the runner reaches a terminal state, inspect the declared artifact and
+7. Invoke the installed waiter with the exact result identity and expected
+   nonce:
+
+   ```text
+   <quoted-waiter> --result-path <quoted-job-dir>/result.json
+     --job-nonce <quoted-job-nonce> --poll-interval-seconds 1
+     --safety-margin-seconds 5
+   ```
+
+   The waiter reads only the atomically replaced per-job `result.json`. It
+   validates schema, exact job nonce, exact result path, timing metadata, and
+   status. Only `completed`, `failed`, `timed_out`, and `cancelled` are
+   terminal; `starting` and `running` remain non-terminal. Its fence is the
+   runner-owned `deadline_at_ns` plus `stop_deadline_seconds` plus the explicit
+   safety margin. A terminal manifest is returned even when its status is
+   failure; inspect that status rather than treating a waiter exit code alone
+   as task success. A non-terminal job is reported incomplete after the fence.
+   The waiter never reads pane text, provider state, transcripts, task text, or
+   output captures, and it never cancels or terminates a process. Normal
+   supervision must not cancel a healthy job because a poll interval elapsed;
+   an operator-directed cancellation is considered only after the fence and
+   still requires a terminal manifest or an explicit missing-evidence report.
+   The pane may be read only to diagnose a missing/dead runner. Do not install
+   hooks, scan provider transcript directories, or start a watcher.
+8. Keep the Cursor profile's full 1,800-second cap; the finalization reserve
+   belongs to the outer worker/host deadline and must not shorten that profile
+   cap. Before that outer deadline, reserve the final 2–5 minutes for a durable
+   finalization checkpoint. Record the result path and manifest status, the
+   expected artifact and focused-check evidence, output hashes or a bounded
+   file list as applicable, the canonical cwd/worktree identity, and direct
+   `git status`/diff evidence. After recording that checkpoint, stop
+   exploratory calls and only complete the report or escalate missing,
+   malformed, or unresolved evidence.
+9. When the waiter reports a terminal state, inspect the declared artifact and
    run only the safe focused checks named by the job. Focused checks run in the
    executor's environment, so use POSIX/BSD/macOS-compatible command forms;
    do not use GNU-only `find` formatting predicates. For file enumeration,
@@ -171,11 +203,12 @@ requested operation, fail closed and ask the calling agent for a decision.
    If a named check is not supported by the host, report the failed check and
    escalate rather than silently substituting a platform-specific command.
    Verify the expected file contents, repository status/diff, and check exit
-   codes directly. A CLI exit code or completion marker alone is insufficient.
-   If the executor requests approval, asks an unresolved question, emits an
-   error, or attempts work outside scope, stop and relay the request to the
-   calling agent; never answer or approve by guessing.
-9. Return a concise report to the calling agent containing the terminal status,
+   codes directly. A CLI exit code, completion marker, or waiter terminal
+   observation alone is insufficient. If the executor requests approval, asks
+   an unresolved question, emits an error, or attempts work outside scope, stop
+   and relay the request to the calling agent; never answer or approve by
+   guessing.
+10. Return a concise report to the calling agent containing the terminal status,
    profile ID, job nonce, caller workspace, executor pane/surface, canonical
    cwd, result path, stdout/stderr paths and hashes, elapsed time, exit status,
    marker observation,
@@ -197,7 +230,11 @@ one final status from `completed`, `failed`, `timed_out`, or `cancelled`, plus:
 - `marker_observed`, which is only a hint that the captured output contained
   the nonce and terminal marker. For `stream-json`, only assistant-authored
   text events count, so an echoed user prompt cannot satisfy it; and
-- timeout, cancellation, and termination information.
+- timeout, cancellation, and termination information; and
+- runner-owned `timeout_seconds`, `deadline_at_ns`, and
+  `stop_deadline_seconds` timing metadata. The waiter uses these fields for its
+  deadline + process-stop-grace + safety-margin fence and never edits the
+  manifest.
 
 The raw captures are optional diagnostics and may contain model output. Keep
 them machine-local, do not copy them into source control, and do not treat
@@ -211,8 +248,10 @@ worktree.
   invalid cwd/worktree, missing runner, or invalid job: fail before execution.
 - Non-zero child exit: report `failed`, even if a marker or partial artifact
   exists.
-- Timeout: terminate the child process group within the profile stop deadline,
-  report `timed_out`, and preserve captures.
+- Timeout: the runner terminates the child process group within the profile
+  stop deadline, writes `timed_out`, and preserves captures. The waiter waits
+  through the runner deadline, stop grace, and safety margin before reporting
+  incomplete evidence; it does not add a second cancellation mechanism.
 - Pane loss or missing result metadata: report incomplete evidence; do not infer
   success from the visible pane.
 - Approval/question/error/scope issue: stop, preserve result paths, and escalate

@@ -476,7 +476,12 @@ def run(args: argparse.Namespace) -> int:
         "yolo": profile["yolo"],
         "executable": executable,
         "result_format": profile["result_format"],
+        # Runner-owned timing metadata consumed by the standalone waiter.
+        # Keep the effective timeout even when the job requested a shorter
+        # value than the selected profile cap.
         "timeout_seconds": timeout_seconds,
+        "deadline_at_ns": started_ns + max(1, math.ceil(timeout_seconds * 1_000_000_000)),
+        "stop_deadline_seconds": profile["stop_deadline_seconds"],
         "command_sha256": hashlib.sha256((command + "\0" + "\0".join(profile["argv"])).encode("utf-8")).hexdigest(),
     }
     atomic_json(result_path, metadata)
@@ -529,7 +534,10 @@ def run(args: argparse.Namespace) -> int:
         metadata["output_mirrored"] = True
         atomic_json(result_path, metadata)
         try:
-            return_code = process.wait(timeout=timeout_seconds)
+            # Enforce the same runner-owned wall-clock deadline published in
+            # result.json; launch/manifest overhead must not extend the job.
+            remaining_seconds = max(0.0, (metadata["deadline_at_ns"] - time.time_ns()) / 1_000_000_000)
+            return_code = process.wait(timeout=remaining_seconds)
         except subprocess.TimeoutExpired:
             timed_out = True
             killed = terminate_group(process, profile["stop_deadline_seconds"])

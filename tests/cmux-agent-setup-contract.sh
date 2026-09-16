@@ -24,6 +24,7 @@ set -e
 [[ ! -e "$CMUX_AGENT_CONFIG" ]]
 [[ ! -e "$CMUX_AGENT_RUNTIME" ]]
 grep -Fq -- 'headless runner' "$sandbox/plan.txt"
+grep -Fq -- 'result waiter' "$sandbox/plan.txt"
 grep -Fq -- 'No Cursor/agy hooks' "$sandbox/plan.txt"
 grep -Fq -- 'cursor profile config:' "$sandbox/plan.txt"
 grep -Fq -- 'cursor.json (timeout_seconds=1800)' "$sandbox/plan.txt"
@@ -31,6 +32,7 @@ grep -Fq -- 'cursor.json (timeout_seconds=1800)' "$sandbox/plan.txt"
 # Apply is explicit and installs only the profile, runner, and runtime dirs.
 printf 'y\n' | bash "$root/tools/cmux-agent-setup.sh" --profile cursor --apply >"$sandbox/apply.txt"
 [[ -x "$CMUX_AGENT_BIN/cmux-agent-run.py" ]]
+[[ -x "$CMUX_AGENT_BIN/cmux-agent-wait.py" ]]
 [[ -f "$CMUX_AGENT_PROFILE_DIR/cursor.json" ]]
 [[ -d "$CMUX_AGENT_RUNTIME/jobs" ]]
 [[ ! -e "$CMUX_AGENT_RUNTIME/events" ]]
