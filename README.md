@@ -43,8 +43,8 @@ calling agent
     │ delegates a bounded task
     ▼
 cmux-agent skill + worker
-    │ reuses the cmux-agent workspace
-    ├── creates a fresh project-labelled surface
+    │ resolves the invoking caller's workspace and surface
+    ├── creates a fresh project-labelled pane beside the caller
     ├── launches a profile-selected headless CLI through cmux-agent-run.py
     ├── captures stdout/stderr and runner metadata
     └── checks declared artifacts and focused checks
@@ -54,9 +54,11 @@ calling agent independently reviews the worktree and accepts or rejects it
 ```
 
 The cmux pane is the execution location and human-visible diagnostic surface.
-It is not a result protocol. The runner starts the child without a shell, passes
-the task using the profile's stdin or prompt-argument mode, and enforces a
-process-group timeout.
+The executor pane is created beside the caller in the caller's existing
+workspace; a new workspace and its unused default pane are never created.
+The pane is not a result protocol. The runner starts the child without a shell,
+passes the task using the profile's stdin or prompt-argument mode, and enforces
+a process-group timeout.
 
 ## Job evidence
 

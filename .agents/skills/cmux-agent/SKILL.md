@@ -1,6 +1,6 @@
 ---
 name: cmux-agent
-description: Run one explicitly configured headless coding CLI in a fresh cmux pane, capture bounded process evidence, check the result, and report it to the calling agent.
+description: Run one explicitly configured headless coding CLI in a fresh cmux pane beside the caller, capture bounded process evidence, check the result, and report it to the calling agent.
 ---
 
 # Cmux agent
@@ -94,12 +94,35 @@ requested operation, fail closed and ask the calling agent for a decision.
 
    Do not put the task in a shell command. Do not store credentials or extra
    prompt copies in the result metadata.
-3. Use the existing `cmux` and `cmux-workspace` skills to find the exact
-   workspace named `cmux-agent`; create it only if absent. Use `cmux new-pane --workspace <cmux-agent-workspace>` to create a fresh terminal pane/surface for this job, even when reusing the workspace. Record
-   the returned workspace and surface IDs, then label the surface with the
-   authoritative project name and next serial ordinal, for example
-   `cmux-integration (2)`. Never route by focus or by a pane title.
-4. Initialize the surface with an explicitly targeted, safely quoted
+3. Use the existing `cmux` and `cmux-workspace` skills to resolve the
+   invoking caller's workspace and terminal surface. Prefer the explicit
+   `CMUX_WORKSPACE_ID` and `CMUX_SURFACE_ID` anchors supplied by cmux. Verify
+   them with an explicitly targeted `cmux list-panes --workspace
+   <caller-workspace> --json --id-format both`. If either anchor is missing,
+   call `cmux identify --json` once and use its `caller.workspace_ref`,
+   `caller.pane_ref`, and `caller.surface_ref` fields—not `focused`—and report
+   that fallback. If a supplied anchor is present but verification fails,
+   fail closed; do not fall back to `identify`. If the caller surface is
+   absent from the workspace, fail closed; never substitute a focused
+   workspace or surface. Never silently use the visually focused workspace.
+
+   Create the executor in that same workspace by splitting the caller surface
+   in one additive command:
+
+   ```text
+   cmux new-split right --workspace <caller-workspace> --surface <caller-surface> --focus false
+   ```
+
+   This creates one fresh terminal surface in a different pane beside the
+   caller and avoids the unused default pane created by a new workspace. Do
+   not create, select, or route to a separate workspace/window. Record the
+   caller workspace and returned executor surface, then label the executor
+   surface with the authoritative project name and next serial ordinal, for
+   example `cmux-integration (2)`. Resolve the executor pane by listing the
+   caller workspace and matching the returned executor surface in
+   `surface_refs`/`surface_ids`; do not assume the creation acknowledgement
+   includes a pane ID. Never route by focus or a pane title.
+4. Initialize the executor surface with an explicitly targeted, safely quoted
    `cd -- <cwd>` command and verify `pwd -P` and worktree identity. A `cmux
    send` acknowledgement is not proof that the command ran.
 5. Resolve the machine-local profile and the installed runner
@@ -117,8 +140,8 @@ requested operation, fail closed and ask the calling agent for a decision.
      --task-file <quoted-task-file>
      --job-dir <quoted-job-dir>
      --job-nonce <quoted-job-nonce>
-     --workspace <quoted-workspace>
-     --surface <quoted-surface>
+     --workspace <quoted-caller-workspace>
+     --surface <quoted-executor-surface>
      --cwd <quoted-cwd>
      --timeout-seconds <quoted-timeout>
    ```
@@ -153,8 +176,9 @@ requested operation, fail closed and ask the calling agent for a decision.
    error, or attempts work outside scope, stop and relay the request to the
    calling agent; never answer or approve by guessing.
 9. Return a concise report to the calling agent containing the terminal status,
-   profile ID, job nonce, workspace/surface, canonical cwd, result path,
-   stdout/stderr paths and hashes, elapsed time, exit status, marker observation,
+   profile ID, job nonce, caller workspace, executor pane/surface, canonical
+   cwd, result path, stdout/stderr paths and hashes, elapsed time, exit status,
+   marker observation,
    artifact evidence, focused-check results, and any limitation or escalation.
    The calling agent independently performs the final review and verification. Do not claim
    success when the artifact/check evidence is missing.
@@ -164,7 +188,8 @@ requested operation, fail closed and ask the calling agent for a decision.
 `result.json` is runner-owned metadata, not executor-authored content. It has
 one final status from `completed`, `failed`, `timed_out`, or `cancelled`, plus:
 
-- job/profile/workspace/surface/cwd identity;
+- job/profile/workspace/surface/cwd identity (the worker report also includes
+  the executor pane returned by cmux);
 - start/end timestamps and duration;
 - child PID and exit code;
 - task hash (not task text);

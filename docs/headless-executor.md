@@ -3,15 +3,15 @@
 ## Decision
 
 `cmux-agent` uses headless CLI processes only. A delegated worker uses the
-`cmux-agent` skill to open a fresh surface in the shared
-`cmux-agent` workspace, run one explicitly selected profile, check the result,
-and report evidence to the calling agent. The calling agent owns the final
-review and verification.
+`cmux-agent` skill to open a fresh pane beside the caller's terminal in the
+caller's existing workspace, run one explicitly selected profile, check the
+result, and report evidence to the calling agent. The calling agent owns the
+final review and verification.
 
-The cmux surface provides visibility and a stable execution location. It is not
-a result channel. Headless stdout/stderr and the runner-owned `result.json` are
-the execution evidence; the actual worktree and declared checks are the
-correctness evidence.
+The cmux surface provides visibility and a stable execution location in the
+caller's existing workspace. It is not a result channel. Headless stdout/stderr
+and the runner-owned `result.json` are execution evidence; the actual worktree
+and declared checks are correctness evidence.
 
 ## Why interactive execution was removed
 
