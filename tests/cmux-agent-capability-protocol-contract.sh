@@ -70,22 +70,22 @@ assert b"execution_mode" not in core_bytes
 
 # All three routes carry exactly one task core/hash and manifest; only the
 # unhashed route envelope differs.
-routes = [route_fn(core, manifest, execution_mode=mode, selected_profile=None if mode == "direct_pi" else "cursor") for mode in ("direct_pi", "supervised_cli_refresh", "manual_handoff")]
+routes = [route_fn(core, manifest, execution_mode=mode, selected_profile=None if mode == "direct" else "cursor") for mode in ("direct", "supervised_cli_refresh", "manual_handoff")]
 assert len({route["task_core"] for route in routes}) == 1
 assert len({route["task_payload_sha256"] for route in routes}) == 1
 assert len({route["capability_manifest"] for route in routes}) == 1
-assert {route["execution_mode"] for route in routes} == {"direct_pi", "supervised_cli_refresh", "manual_handoff"}
+assert {route["execution_mode"] for route in routes} == {"direct", "supervised_cli_refresh", "manual_handoff"}
 assert all("execution_mode" not in json.loads(route["task_core"]) for route in routes)
 assert "selected_profile" not in routes[0]["route"]
 assert "capability_manifest_sha256" not in routes[0]
 default_route = p["route_envelope"]()
-assert default_route == {"execution_mode": "direct_pi"}
+assert default_route == {"execution_mode": "direct"}
 try:
     p["route_envelope"]("")
 except ProtocolError as exc:
     assert exc.code == "execution-mode-invalid"
 else:
-    raise AssertionError("an explicitly empty route silently selected direct Pi")
+    raise AssertionError("an explicitly empty route silently selected direct calling-agent")
 try:
     p["route_envelope"](None, selected_profile="cursor")
 except ProtocolError as exc:
@@ -114,10 +114,10 @@ except ProtocolError as exc:
     assert exc.code == "manual-route-has-no-executor-brief"
 else:
     raise AssertionError("manual handoff was rendered through the manifest-bearing executor brief")
-# A packet without route metadata remains the direct-Pi default; it must not
+# A packet without route metadata remains the direct calling-agent default; it must not
 # invent a profile or delegated transport.
 direct_packets = {key: brief["job"][key] for key in ("capability_policy_version", "delegated_capability_authority", "capability_manifest", "task_core", "task_payload_sha256")}
-assert p["validate_job_and_brief"](direct_packets, dict(direct_packets))["execution_mode"] == "direct_pi"
+assert p["validate_job_and_brief"](direct_packets, dict(direct_packets))["execution_mode"] == "direct"
 assert "capability_manifest_sha256" not in brief["brief"]
 assert "&lt;!-- CMX_CAPABILITY_READY &lt;job_nonce&gt; --&gt;" in brief["brief"]["prompt"]
 # Expected manifest digests cannot hide inside route metadata, and a repeated
@@ -143,12 +143,12 @@ except ProtocolError as exc:
     assert exc.code == "task-payload-hash-mismatch"
 else:
     raise AssertionError("route task hash mismatch was accepted")
-direct_route = route_fn(core, manifest, execution_mode="direct_pi")["route"]
+direct_route = route_fn(core, manifest, execution_mode="direct")["route"]
 try:
     p["validate_job_and_brief"](
         {"capability_policy_version": 1, "delegated_capability_authority": "local-read-only", "capability_manifest": brief["job"]["capability_manifest"], "task_core": brief["job"]["task_core"], "task_payload_sha256": task_hash},
         {"capability_policy_version": 1, "delegated_capability_authority": "local-read-only", "capability_manifest": brief["brief"]["capability_manifest"], "task_core": brief["brief"]["task_core"], "task_payload_sha256": task_hash, "route": {**direct_route, "selected_profile": "cursor"}},
-        execution_mode="direct_pi",
+        execution_mode="direct",
     )
 except ProtocolError as exc:
     assert exc.code == "direct-route-metadata"
@@ -449,7 +449,7 @@ manual = result_fn({"task_contract_version": 1, "task_payload_sha256": task_hash
 assert manual["evidence_class"] == "manual" and manual["supervised"] is False
 # Identified direct and manual envelopes must state both metadata fields;
 # omission is not equivalent to an explicit empty limitation list or label.
-for mode, evidence_class in (("direct_pi", "direct"), ("manual_handoff", "manual")):
+for mode, evidence_class in (("direct", "direct"), ("manual_handoff", "manual")):
     valid = {
         "task_contract_version": 1,
         "task_payload_sha256": task_hash,

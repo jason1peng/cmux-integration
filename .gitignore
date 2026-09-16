@@ -1,4 +1,3 @@
-.pi-subagents/
 .DS_Store
 __pycache__/
 *.py[cod]

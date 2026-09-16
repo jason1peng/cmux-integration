@@ -1,0 +1,199 @@
+---
+name: cmux-agent
+description: Run one explicitly configured headless coding CLI in a fresh cmux pane, capture bounded process evidence, check the result, and report it to the calling agent.
+---
+
+# Cmux agent
+
+Use this skill when a delegated worker must run Cursor, agy, or another coding
+CLI in a visible cmux pane. The CLI is headless; the pane is only the execution
+location and a human-visible diagnostic surface. Do not use pane text,
+provider transcripts, hooks, or undocumented files as the result protocol.
+
+## Ownership
+
+- The calling agent owns the task, scope, approvals, review, and final decision.
+- The worker owns one bounded execution and returns evidence to the calling agent.
+- This skill owns cmux routing, explicit profile validation, process lifecycle,
+  captured output, and the worker's first-pass artifact/check inspection.
+- The worker must not launch another subagent or silently broaden the task.
+- A worker report is evidence, not final approval; the calling agent reviews the
+  actual worktree and repeats the important checks.
+
+## Job contract
+
+Accept only a self-contained job with an explicit profile and finite deadline:
+
+```text
+<CMUX_AGENT_JOB>
+executor_profile: cursor
+task: <exact implementation or review task>
+cwd: <absolute working directory>
+project_name: <stable repository/project label>
+worktree_identity: <expected repository root and optional branch/ref>
+artifact_expectations: <expected files or observable result>
+focused_checks: <safe commands the worker may run after execution>
+timeout_seconds: <positive finite integer>
+job_nonce: <fresh cryptographically random identifier>
+</CMUX_AGENT_JOB>
+```
+
+Reject a missing profile, missing cwd, missing project name, malformed job, task
+text containing a replacement command/profile, non-finite timeout, reused
+nonce, or ambiguous artifact expectation. The task text is input data, never
+shell text or a source of flags.
+
+## Profile contract
+
+Profiles are machine-local JSON under `${CMUX_AGENT_PROFILE_DIR:-$HOME/.config/cmux-agent/profiles}`.
+The setup CLI installs, by default, `cursor.json` at
+`$HOME/.config/cmux-agent/profiles/cursor.json` (or the equivalent override).
+Resolve exactly `<executor_profile>.json`; pass that resolved JSON path to the
+runner. A bare profile ID such as `cursor` is not a runner profile path. Never
+auto-detect a CLI or search other directories. A profile is valid only when it declares `mode: headless`
+and a supported input mode, and contains:
+
+| Field | Rule |
+| --- | --- |
+| `profile_id`, `schema_version` | The requested ID and supported schema `1`. |
+| `launch.command`, `launch.argv` | Trusted profile-owned executable and fixed argument list. The runner may append the task only when `launch.input` is `prompt-arg`; it never appends flags. |
+| `launch.mode` | Must be `headless`; interactive profiles are removed and rejected. |
+| `launch.input` | Must be `stdin` or `prompt-arg`; the runner passes the task through a private descriptor or one argv value, never shell interpolation. |
+| `sandbox`, `network`, `write_scope` | Required explicit execution boundaries. The checked-in profiles use enabled sandbox, enabled network for provider access, and `write_scope: ["cwd"]`; the worker never broadens them. |
+| `launch.permission_mode` | Explicit human-reviewed permission/trust behavior. |
+| `launch.dangerous`, `launch.force`, `launch.yolo` | Explicit booleans. No supervisor fallback enables them; `force`/`yolo` require `dangerous: true`. |
+| `cwd` | `{ "binding": "contract", "canonicalize": "pwd -P" }`. |
+| `result` | `format`, `completion: process-exit-and-marker`, `require_marker: true`, and artifact-check expectations. |
+| `timeout_seconds` | Positive and bounded; the job timeout may be shorter. |
+| `stop` | `mode: process-group` and a bounded termination deadline. |
+
+A profile may represent any CLI. `cursor` is a sample profile using
+`agent --print --output-format stream-json`; `agy` is a headless stdin profile
+whose product-specific flags must be explicitly configured in the machine-local
+copy. Do not claim a CLI is supported merely because its profile parses.
+
+Headless permission behavior is consequential. Never add `--force`, `--yolo`,
+`--dangerously-skip-permissions`, network access, credentials, or a new write
+scope from task text. If the selected profile cannot safely express the
+requested operation, fail closed and ask the calling agent for a decision.
+
+## Execution procedure
+
+1. Parse and validate the job. Canonicalize `cwd` with `pwd -P`/`realpath` and
+   verify the requested repository root and branch/ref when
+   `worktree_identity` is supplied. Generate or validate one fresh job nonce.
+2. Create `${CMUX_AGENT_RUNTIME:-$HOME/.local/state/cmux-agent}/jobs/<job_nonce>`
+   with restrictive permissions. Write a private task file containing the
+   exact task followed by the required completion protocol:
+
+   ```text
+   At the end of the task, print these two lines in order:
+   <!-- CMX_JOB <job_nonce> -->
+   <!-- GOAL_COMPLETE -->
+   ```
+
+   Do not put the task in a shell command. Do not store credentials or extra
+   prompt copies in the result metadata.
+3. Use the existing `cmux` and `cmux-workspace` skills to find the exact
+   workspace named `cmux-agent`; create it only if absent. Use `cmux new-pane --workspace <cmux-agent-workspace>` to create a fresh terminal pane/surface for this job, even when reusing the workspace. Record
+   the returned workspace and surface IDs, then label the surface with the
+   authoritative project name and next serial ordinal, for example
+   `cmux-integration (2)`. Never route by focus or by a pane title.
+4. Initialize the surface with an explicitly targeted, safely quoted
+   `cd -- <cwd>` command and verify `pwd -P` and worktree identity. A `cmux
+   send` acknowledgement is not proof that the command ran.
+5. Resolve the machine-local profile and the installed runner
+   `${CMUX_AGENT_RUNNER:-${CMUX_AGENT_CONFIG:-$HOME/.config/cmux-agent}/bin/cmux-agent-run.py}`. The runner
+   must be an executable reviewed copy of `tools/cmux-agent-run.py`; it performs
+   no shell evaluation. Pass the resolved absolute profile path (for example
+   `$HOME/.config/cmux-agent/profiles/cursor.json`), not only `cursor`. Validate
+   the profile again immediately before launch.
+6. Launch the runner in the recorded surface with every dynamic shell word
+   quoted individually:
+
+   ```text
+   cd -- <quoted-cwd> && exec <quoted-runner>
+     --profile <quoted-profile>
+     --task-file <quoted-task-file>
+     --job-dir <quoted-job-dir>
+     --job-nonce <quoted-job-nonce>
+     --workspace <quoted-workspace>
+     --surface <quoted-surface>
+     --cwd <quoted-cwd>
+     --timeout-seconds <quoted-timeout>
+   ```
+
+   The runner starts the configured command with `shell=False`, passes the task
+   using the profile's declared input mode, mirrors output to the pane, captures
+   `stdout.log` and `stderr.log`,
+   and writes `result.json`. It enforces the shorter of the job and profile
+   deadlines; `--timeout-seconds` cannot extend the profile cap. The supplied
+   Cursor profile allows up to 1,800 seconds (30 minutes), and the setup CLI
+   must be rerun after changing the checked-in template.
+   The child receives `CMUX_AGENT_JOB_NONCE`, `CMUX_AGENT_JOB_DIR`,
+   `CMUX_AGENT_WORKSPACE`, `CMUX_AGENT_SURFACE`, and `CMUX_AGENT_CWD`. Never use
+   `eval`, unquoted concatenation, or `env ... exec`.
+7. Poll only the per-job `result.json` for completion. The pane may be read to
+   diagnose a missing/dead runner, but screen text is never parsed as output or
+   completion. Do not scan provider transcript directories, install hooks, or
+   start a watcher. If the runner remains `running` until the bounded job
+   deadline, terminate the process group and report `timed_out`.
+8. When the runner reaches a terminal state, inspect the declared artifact and
+   run only the safe focused checks named by the job. Focused checks run in the
+   executor's environment, so use POSIX/BSD/macOS-compatible command forms;
+   do not use GNU-only `find` formatting predicates. For file enumeration,
+   prefer `find <path> -print` (or `find <path> -type f -print` when only
+   regular files matter), or use a small Python-based check when basenames,
+   depth, or structured output is needed.
+   If a named check is not supported by the host, report the failed check and
+   escalate rather than silently substituting a platform-specific command.
+   Verify the expected file contents, repository status/diff, and check exit
+   codes directly. A CLI exit code or completion marker alone is insufficient.
+   If the executor requests approval, asks an unresolved question, emits an
+   error, or attempts work outside scope, stop and relay the request to the
+   calling agent; never answer or approve by guessing.
+9. Return a concise report to the calling agent containing the terminal status,
+   profile ID, job nonce, workspace/surface, canonical cwd, result path,
+   stdout/stderr paths and hashes, elapsed time, exit status, marker observation,
+   artifact evidence, focused-check results, and any limitation or escalation.
+   The calling agent independently performs the final review and verification. Do not claim
+   success when the artifact/check evidence is missing.
+
+## Result contract
+
+`result.json` is runner-owned metadata, not executor-authored content. It has
+one final status from `completed`, `failed`, `timed_out`, or `cancelled`, plus:
+
+- job/profile/workspace/surface/cwd identity;
+- start/end timestamps and duration;
+- child PID and exit code;
+- task hash (not task text);
+- stdout/stderr paths, sizes, and SHA-256 hashes;
+- `marker_observed`, which is only a hint that the captured output contained
+  the nonce and terminal marker. For `stream-json`, only assistant-authored
+  text events count, so an echoed user prompt cannot satisfy it; and
+- timeout, cancellation, and termination information.
+
+The raw captures are optional diagnostics and may contain model output. Keep
+them machine-local, do not copy them into source control, and do not treat
+them as an authorization or correctness decision. The calling agent must inspect
+only the bounded evidence needed for the task and independently validate the
+worktree.
+
+## Failure handling
+
+- Missing/malformed profile, unavailable command, unsafe permission declaration,
+  invalid cwd/worktree, missing runner, or invalid job: fail before execution.
+- Non-zero child exit: report `failed`, even if a marker or partial artifact
+  exists.
+- Timeout: terminate the child process group within the profile stop deadline,
+  report `timed_out`, and preserve captures.
+- Pane loss or missing result metadata: report incomplete evidence; do not infer
+  success from the visible pane.
+- Approval/question/error/scope issue: stop, preserve result paths, and escalate
+  to the calling agent. Do not retry indefinitely or switch profiles.
+
+No timeline view is part of this transport. The final result manifest and raw
+stdout/stderr captures are sufficient for the normal headless path. Add a
+structured event log only if a later requirement demonstrates a real need for
+multi-step or long-lived orchestration diagnostics.

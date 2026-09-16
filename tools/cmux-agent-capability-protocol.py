@@ -2,7 +2,7 @@
 """CLI-neutral capability/task protocol helpers.
 
 This small, offline tool owns canonical JSON, digest, marker, budget, and
-result-envelope rules shared by the Pi supervisor and machine-local adapters.
+result-envelope rules shared by the calling agent and machine-local adapters.
 It never invokes a capability, contacts a server, or executes a command.
 """
 from __future__ import annotations
@@ -35,7 +35,7 @@ AUTHORITY_NONE = "none"
 AUTHORITY_LOCAL_READ_ONLY = "local-read-only"
 AUTHORITY_VALUES = {AUTHORITY_NONE, AUTHORITY_LOCAL_READ_ONLY}
 DISCOVERY_VALUES = {"local", "cached"}
-EXECUTION_MODES = {"direct_pi", "supervised_cli_refresh", "manual_handoff"}
+EXECUTION_MODES = {"direct", "supervised_cli_refresh", "manual_handoff"}
 EXECUTOR_ROLES = {"assistant", "model", "tool", "function"}
 # Transcript adapters may expose pane labels, injected briefs, or supervisor
 # continuations using an executor-looking role. Those records are still
@@ -432,28 +432,28 @@ def route_envelope(
     lifecycle: Any = None,
     task_payload_sha256: str | None = None,
 ) -> dict[str, Any]:
-    # Omitting route selection preserves the existing direct Pi path. Unknown
+    # Omitting route selection preserves the existing direct calling-agent path. Unknown
     # non-empty values still fail closed rather than falling back silently.
     if execution_mode is None:
-        # Only an omitted route selects the direct Pi path. An explicitly
+        # Only an omitted route selects the direct calling-agent path. An explicitly
         # empty value is malformed input and must not silently bypass profile
         # selection or route validation.
-        execution_mode = "direct_pi"
+        execution_mode = "direct"
     if not isinstance(execution_mode, str) or execution_mode not in EXECUTION_MODES:
         fail("execution-mode-invalid")
-    if execution_mode == "direct_pi" and any(value is not None for value in (selected_profile, transport, lifecycle)):
+    if execution_mode == "direct" and any(value is not None for value in (selected_profile, transport, lifecycle)):
         fail("direct-route-metadata")
     if execution_mode == "supervised_cli_refresh" and selected_profile is None:
         fail("supervised-route-profile-missing")
     envelope: dict[str, Any] = {"execution_mode": execution_mode}
-    # direct_pi deliberately has no profile, transport, or lifecycle route;
-    # optional adapters cannot silently replace the current Pi conversation.
-    if execution_mode != "direct_pi" and selected_profile is not None:
+    # direct deliberately has no profile, transport, or lifecycle route;
+    # optional adapters cannot silently replace the current calling-agent conversation.
+    if execution_mode != "direct" and selected_profile is not None:
         envelope["selected_profile"] = _bounded_id(selected_profile, "selected_profile")
-    if execution_mode != "direct_pi" and transport is not None:
+    if execution_mode != "direct" and transport is not None:
         _json_value(transport, allow_controls=False)
         envelope["transport"] = transport
-    if execution_mode != "direct_pi" and lifecycle is not None:
+    if execution_mode != "direct" and lifecycle is not None:
         _json_value(lifecycle, allow_controls=False)
         envelope["lifecycle"] = lifecycle
     if task_payload_sha256 is not None:
@@ -1465,7 +1465,7 @@ def validate_result(
         fail("execution-mode-invalid")
     if not isinstance(supervised, bool) or not isinstance(fresh_correlated_evidence, bool):
         fail("result-validation-flags-malformed")
-    if supervised and execution_mode in {"direct_pi", "manual_handoff"}:
+    if supervised and execution_mode in {"direct", "manual_handoff"}:
         fail("result-supervision-mode-invalid")
     # Report contract skew before any result-shape or hash handling, including
     # unknown extra fields, so callers never silently coerce an unknown version.
@@ -1623,16 +1623,16 @@ def validate_job_and_brief(job: Any, brief: Any, *, execution_mode: str | None =
         fail("task-payload-hash-mismatch")
 
     # Validate the route envelope independently from the hashed task core.
-    # Route metadata is still untrusted adapter input: direct_pi must not gain
+    # Route metadata is still untrusted adapter input: direct must not gain
     # a profile/transport by mutation, and transport/lifecycle wrappers may not
     # smuggle a second substantive task or manifest copy.
     route = brief.get("route")
     route_mode: str | None = None
     if route is None:
-        # An omitted route is the explicit direct-Pi default. Keep this
+        # An omitted route is the explicit direct calling-agent default. Keep this
         # validator usable for the direct report context while rejecting a
         # caller that claims a delegated mode without route metadata.
-        route_mode = "direct_pi"
+        route_mode = "direct"
         if execution_mode is not None and execution_mode != route_mode:
             fail("result-execution-mode-mismatch")
     elif not isinstance(route, dict):
@@ -1643,7 +1643,7 @@ def validate_job_and_brief(job: Any, brief: Any, *, execution_mode: str | None =
         route_mode = route.get("execution_mode")
         if not isinstance(route_mode, str) or route_mode not in EXECUTION_MODES:
             fail("execution-mode-invalid")
-        if route_mode == "direct_pi" and any(key in route for key in ("selected_profile", "transport", "lifecycle")):
+        if route_mode == "direct" and any(key in route for key in ("selected_profile", "transport", "lifecycle")):
             fail("direct-route-metadata")
         if any(
             _contains_key(route.get(key), "task_core")
@@ -1803,7 +1803,7 @@ def render_executor_brief(
     that digest belongs in supervisor state and is only compared with the
     executor's fresh readiness record.
     """
-    if execution_mode is None or execution_mode == "" or execution_mode == "direct_pi":
+    if execution_mode is None or execution_mode == "" or execution_mode == "direct":
         fail("direct-route-has-no-executor-brief")
     if execution_mode == "manual_handoff":
         # Manual handoff is deliberately manifest-free and has its own
