@@ -271,7 +271,7 @@ def atomic_json(path: Path, value: dict[str, Any]) -> None:
                 pass
 
 
-def marker_observed(path: Path, nonce: str) -> bool:
+def _raw_marker_observed(path: Path, nonce: str) -> bool:
     """Find the nonce and terminal marker without loading output into memory."""
     nonce_bytes = f"<!-- CMX_JOB {nonce} -->".encode("utf-8")
     goal_bytes = b"<!-- GOAL_COMPLETE -->"
@@ -298,6 +298,70 @@ def marker_observed(path: Path, nonce: str) -> bool:
             # across two writes is still recognized.
             carry = data[-(len(goal_bytes) - 1):]
     return False
+
+
+def _assistant_text(event: Any) -> str:
+    """Extract assistant-authored text from a stream-json event."""
+    if not isinstance(event, dict) or event.get("type") != "assistant":
+        return ""
+    message = event.get("message")
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    return "".join(
+        item["text"]
+        for item in content
+        if isinstance(item, dict)
+        and item.get("type") == "text"
+        and isinstance(item.get("text"), str)
+    )
+
+
+def _stream_json_marker_observed(path: Path, nonce: str) -> bool:
+    """Find completion markers only in assistant events, not echoed prompts."""
+    nonce_marker = f"<!-- CMX_JOB {nonce} -->"
+    goal_marker = "<!-- GOAL_COMPLETE -->"
+    found_nonce = False
+    carry = ""
+    with path.open("rb") as stream:
+        for raw_line in stream:
+            try:
+                event = json.loads(raw_line)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            text = _assistant_text(event)
+            if not text:
+                continue
+            data = carry + text
+            if not found_nonce:
+                position = data.find(nonce_marker)
+                if position >= 0:
+                    found_nonce = True
+                    data = data[position + len(nonce_marker):]
+                else:
+                    carry = data[-(len(nonce_marker) - 1):]
+                    continue
+            if goal_marker in data:
+                return True
+            # Keep enough text for a marker split across assistant events.
+            carry = data[-(len(goal_marker) - 1):]
+    return False
+
+
+def marker_observed(path: Path, nonce: str, result_format: str) -> bool:
+    """Observe the marker in the declared output format.
+
+    Cursor's stream-json output includes the supplied prompt as a ``user``
+    event. Only assistant text can satisfy its completion marker; otherwise a
+    timed-out process that merely echoed its prompt could look complete.
+    """
+    if result_format == "stream-json":
+        return _stream_json_marker_observed(path, nonce)
+    return _raw_marker_observed(path, nonce)
 
 
 def mirror_stream(source: Any, destination: Any, display: Any) -> None:
@@ -514,7 +578,7 @@ def run(args: argparse.Namespace) -> int:
     metadata["stdout_sha256"] = stdout_hash
     metadata["stderr_size"] = stderr_size
     metadata["stderr_sha256"] = stderr_hash
-    marker_found = marker_observed(stdout_path, nonce)
+    marker_found = marker_observed(stdout_path, nonce, profile["result_format"])
     metadata["marker_observed"] = marker_found
     if timed_out:
         metadata["status"] = "timed_out"

@@ -30,8 +30,11 @@ bash tools/cmux-agent-setup.sh --profile cursor --check
 ```
 
 Use `--profile agy` or `--profile both` to install the corresponding profile
-templates. Setup never edits shell startup files, Cursor/agy hooks, credentials,
-transcripts, or timeline files.
+templates. With the default locations, this installs the runner at
+`$HOME/.config/cmux-agent/bin/cmux-agent-run.py` and Cursor at
+`$HOME/.config/cmux-agent/profiles/cursor.json`; the setup plan prints the
+selected path and profile timeout. Setup never edits shell startup files,
+Cursor/agy hooks, credentials, transcripts, or timeline files.
 
 ## How it works
 
@@ -104,7 +107,7 @@ Checked-in templates are portable examples, not personal machine state:
 
 - `adapters/cursor/executor-profile.cursor.json` — Cursor
   `agent --print --output-format stream-json --sandbox enabled --trust` with a
-  prompt argument.
+  prompt argument and a 30-minute profile cap.
 - `adapters/agy/executor-profile.agy.json` — agy headless profile shape; add
   product-specific headless flags only in the machine-local copy after
   confirming them against the installed product.

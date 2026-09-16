@@ -29,14 +29,14 @@
     "format": "stream-json",
     "completion": "process-exit-and-marker",
     "require_marker": true,
-    "marker_rule": "the fresh stdout capture contains the job nonce followed by GOAL_COMPLETE; the calling agent verifies the artifact and does not trust this flag alone",
+    "marker_rule": "the fresh assistant text in stream-json contains the job nonce followed by GOAL_COMPLETE; the calling agent verifies the artifact and does not trust this flag alone",
     "artifact_checks": [
       "expected artifact exists and has the requested contents",
       "git diff --check",
       "declared focused checks pass"
     ]
   },
-  "timeout_seconds": 600,
+  "timeout_seconds": 1800,
   "stop": {
     "mode": "process-group",
     "deadline_seconds": 10

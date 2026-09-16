@@ -13,6 +13,7 @@ mkdir -p "$sandbox/jobs" "$sandbox/work tree"
 
 cat >"$sandbox/fake-agent.py" <<'PY'
 #!/usr/bin/env python3
+import json
 import os
 import pathlib
 import sys
@@ -23,10 +24,31 @@ if "--sleep" in sys.argv:
     time.sleep(10)
 if "--write-arg" in sys.argv:
     pathlib.Path(os.environ["CMUX_TEST_ARG_OUTPUT"]).write_text("\n".join(sys.argv[1:]) + "\n")
-print(payload, end="")
-if "--no-marker" not in sys.argv:
-    print(f"<!-- CMX_JOB {os.environ['CMUX_AGENT_JOB_NONCE']} -->")
-    print("<!-- GOAL_COMPLETE -->")
+if "--stream-json" in sys.argv:
+    print(json.dumps({
+        "type": "user",
+        "message": {"role": "user", "content": [{"type": "text", "text": payload}]},
+    }))
+    if "--no-marker" not in sys.argv:
+        print(json.dumps({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{
+                    "type": "text",
+                    "text": (
+                        f"<!-- CMX_JOB {os.environ['CMUX_AGENT_JOB_NONCE']} -->"
+                        "\n"
+                        "<!-- GOAL_COMPLETE -->"
+                    ),
+                }],
+            },
+        }))
+else:
+    print(payload, end="")
+    if "--no-marker" not in sys.argv:
+        print(f"<!-- CMX_JOB {os.environ['CMUX_AGENT_JOB_NONCE']} -->")
+        print("<!-- GOAL_COMPLETE -->")
 PY
 chmod +x "$sandbox/fake-agent.py"
 
@@ -118,6 +140,53 @@ value = json.loads(pathlib.Path(sys.argv[1]).read_text())
 assert value["status"] == "completed", value
 assert value["input"] == "prompt-arg", value
 assert "implement the harmless fixture" in pathlib.Path(sys.argv[2]).read_text(), value
+PY
+
+# Structured output must ignore a prompt echo: the user event contains the
+# injected markers, but no assistant event completes the task.
+stream_task="$sandbox/stream-echo-task.txt"
+printf '%s\n<!-- CMX_JOB run-contract-stream-echo -->\n<!-- GOAL_COMPLETE -->\n' \
+  'echo-only prompt' >"$stream_task"
+python3 - "$sandbox/profile.json" "$sandbox/stream-json.json" <<'PY'
+import json
+import pathlib
+import sys
+value = json.loads(pathlib.Path(sys.argv[1]).read_text())
+value["launch"]["argv"] = ["--stream-json", "--no-marker"]
+value["launch"]["input"] = "prompt-arg"
+value["result"]["format"] = "stream-json"
+pathlib.Path(sys.argv[2]).write_text(json.dumps(value))
+PY
+set +e
+python3 "$runner" --profile "$sandbox/stream-json.json" --task-file "$stream_task" --job-dir "$sandbox/jobs/run-contract-stream-echo" --job-nonce run-contract-stream-echo --workspace workspace-fixture --surface surface-fixture --cwd "$sandbox/work tree"
+status=$?
+set -e
+[[ "$status" -ne 0 ]] || { echo "prompt echo unexpectedly completed" >&2; exit 1; }
+python3 - "$sandbox/jobs/run-contract-stream-echo/result.json" <<'PY'
+import json
+import sys
+value = json.load(open(sys.argv[1]))
+assert value["status"] == "failed", value
+assert value["marker_observed"] is False, value
+assert "completion marker" in value["error"], value
+PY
+
+# A genuine assistant event in stream-json output satisfies the marker.
+python3 - "$sandbox/stream-json.json" "$sandbox/stream-json-complete.json" <<'PY'
+import json
+import pathlib
+import sys
+value = json.loads(pathlib.Path(sys.argv[1]).read_text())
+value["launch"]["argv"] = ["--stream-json"]
+pathlib.Path(sys.argv[2]).write_text(json.dumps(value))
+PY
+python3 "$runner" --profile "$sandbox/stream-json-complete.json" --task-file "$sandbox/task.txt" --job-dir "$sandbox/jobs/run-contract-stream-complete" --job-nonce run-contract-stream-complete --workspace workspace-fixture --surface surface-fixture --cwd "$sandbox/work tree"
+python3 - "$sandbox/jobs/run-contract-stream-complete/result.json" <<'PY'
+import json
+import sys
+value = json.load(open(sys.argv[1]))
+assert value["status"] == "completed", value
+assert value["marker_observed"] is True, value
 PY
 
 # A zero exit without the nonce-framed marker is still a failed job.

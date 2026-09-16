@@ -56,6 +56,8 @@ assert cursor["write_scope"] == ["cwd"]
 assert cursor["launch"]["dangerous"] is False
 assert cursor["launch"]["force"] is False
 assert cursor["launch"]["yolo"] is False
+assert cursor["timeout_seconds"] == 1800
+assert "assistant text" in cursor["result"]["marker_rule"]
 
 agy = load(root / "adapters/agy/executor-profile.agy.json")
 common(agy, "agy")

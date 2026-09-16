@@ -217,6 +217,16 @@ if wants("cursor"):
     source_data["cursor"] = validate_profile(source_data["cursor"], sources["cursor"], "cursor")
 if wants("agy"):
     source_data["agy"] = validate_profile(source_data["agy"], sources["agy"], "agy")
+
+
+def profile_timeout(profile_name: str) -> int | float:
+    value = json.loads(source_data[profile_name].decode("utf-8"))
+    timeout = value.get("timeout_seconds")
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
+        raise SetupError(f"profile timeout is invalid: {profile_name}")
+    return timeout
+
+
 directories = [
     DirectoryItem("profile directory", profile_dir),
     DirectoryItem("runtime directory", runtime),
@@ -249,6 +259,12 @@ def print_plan() -> None:
         else:
             action = "replace only after confirmation"
         print(f"  {action}: {item.label}: {item.target}")
+    for profile_name in ("cursor", "agy"):
+        if wants(profile_name):
+            print(
+                f"  {profile_name} profile config: {profile_dir / (profile_name + '.json')} "
+                f"(timeout_seconds={profile_timeout(profile_name)})"
+            )
     if wants("cursor"):
         print(f"  preflight Cursor executable: {'ready' if agent_ready else 'missing'} ({shutil.which('agent') or 'not found'})")
     if wants("agy"):

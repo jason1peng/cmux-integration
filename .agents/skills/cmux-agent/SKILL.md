@@ -46,8 +46,11 @@ shell text or a source of flags.
 ## Profile contract
 
 Profiles are machine-local JSON under `${CMUX_AGENT_PROFILE_DIR:-$HOME/.config/cmux-agent/profiles}`.
-Resolve exactly `<executor_profile>.json`; never auto-detect a CLI or search
-other directories. A profile is valid only when it declares `mode: headless`
+The setup CLI installs, by default, `cursor.json` at
+`$HOME/.config/cmux-agent/profiles/cursor.json` (or the equivalent override).
+Resolve exactly `<executor_profile>.json`; pass that resolved JSON path to the
+runner. A bare profile ID such as `cursor` is not a runner profile path. Never
+auto-detect a CLI or search other directories. A profile is valid only when it declares `mode: headless`
 and a supported input mode, and contains:
 
 | Field | Rule |
@@ -102,7 +105,9 @@ requested operation, fail closed and ask the calling agent for a decision.
 5. Resolve the machine-local profile and the installed runner
    `${CMUX_AGENT_RUNNER:-${CMUX_AGENT_CONFIG:-$HOME/.config/cmux-agent}/bin/cmux-agent-run.py}`. The runner
    must be an executable reviewed copy of `tools/cmux-agent-run.py`; it performs
-   no shell evaluation. Validate the profile again immediately before launch.
+   no shell evaluation. Pass the resolved absolute profile path (for example
+   `$HOME/.config/cmux-agent/profiles/cursor.json`), not only `cursor`. Validate
+   the profile again immediately before launch.
 6. Launch the runner in the recorded surface with every dynamic shell word
    quoted individually:
 
@@ -122,7 +127,9 @@ requested operation, fail closed and ask the calling agent for a decision.
    using the profile's declared input mode, mirrors output to the pane, captures
    `stdout.log` and `stderr.log`,
    and writes `result.json`. It enforces the shorter of the job and profile
-   deadlines.
+   deadlines; `--timeout-seconds` cannot extend the profile cap. The supplied
+   Cursor profile allows up to 1,800 seconds (30 minutes), and the setup CLI
+   must be rerun after changing the checked-in template.
    The child receives `CMUX_AGENT_JOB_NONCE`, `CMUX_AGENT_JOB_DIR`,
    `CMUX_AGENT_WORKSPACE`, `CMUX_AGENT_SURFACE`, and `CMUX_AGENT_CWD`. Never use
    `eval`, unquoted concatenation, or `env ... exec`.
@@ -132,12 +139,19 @@ requested operation, fail closed and ask the calling agent for a decision.
    start a watcher. If the runner remains `running` until the bounded job
    deadline, terminate the process group and report `timed_out`.
 8. When the runner reaches a terminal state, inspect the declared artifact and
-   run only the safe focused checks named by the job. Verify the expected file
-   contents, repository status/diff, and check exit codes directly. A CLI exit
-   code or completion marker alone is insufficient. If the executor requests
-   approval, asks an unresolved question, emits an error, or attempts work
-   outside scope, stop and relay the request to the calling agent; never answer or
-   approve by guessing.
+   run only the safe focused checks named by the job. Focused checks run in the
+   executor's environment, so use POSIX/BSD/macOS-compatible command forms;
+   do not use GNU-only `find` formatting predicates. For file enumeration,
+   prefer `find <path> -print` (or `find <path> -type f -print` when only
+   regular files matter), or use a small Python-based check when basenames,
+   depth, or structured output is needed.
+   If a named check is not supported by the host, report the failed check and
+   escalate rather than silently substituting a platform-specific command.
+   Verify the expected file contents, repository status/diff, and check exit
+   codes directly. A CLI exit code or completion marker alone is insufficient.
+   If the executor requests approval, asks an unresolved question, emits an
+   error, or attempts work outside scope, stop and relay the request to the
+   calling agent; never answer or approve by guessing.
 9. Return a concise report to the calling agent containing the terminal status,
    profile ID, job nonce, workspace/surface, canonical cwd, result path,
    stdout/stderr paths and hashes, elapsed time, exit status, marker observation,
@@ -156,7 +170,8 @@ one final status from `completed`, `failed`, `timed_out`, or `cancelled`, plus:
 - task hash (not task text);
 - stdout/stderr paths, sizes, and SHA-256 hashes;
 - `marker_observed`, which is only a hint that the captured output contained
-  the nonce and terminal marker; and
+  the nonce and terminal marker. For `stream-json`, only assistant-authored
+  text events count, so an echoed user prompt cannot satisfy it; and
 - timeout, cancellation, and termination information.
 
 The raw captures are optional diagnostics and may contain model output. Keep

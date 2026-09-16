@@ -18,8 +18,10 @@ Resolve exactly one profile, in this order:
 3. no fallback.
 
 The resolver reads only
-`${CMUX_AGENT_PROFILE_DIR:-$HOME/.config/cmux-agent}/<profile-id>.json`.
-It never auto-detects an installed CLI or accepts a command from task text.
+`${CMUX_AGENT_PROFILE_DIR:-$HOME/.config/cmux-agent/profiles}/<profile-id>.json`.
+With the default setup, for example, the Cursor profile is
+`$HOME/.config/cmux-agent/profiles/cursor.json`. It never auto-detects an
+installed CLI or accepts a command from task text.
 
 ## Profile shape
 
@@ -59,7 +61,9 @@ It never auto-detects an installed CLI or accepts a command from task text.
 }
 ```
 
-The runner validates this contract before launching:
+The runner validates this contract before launching. For `stream-json`
+profiles, completion markers are searched only in assistant-authored text
+events, not the echoed user prompt.
 
 - executable and argv come only from the profile;
 - mode is `headless` and input is `stdin` or `prompt-arg`;
@@ -78,7 +82,7 @@ marker is not sufficient without artifact and focused-check evidence.
 ### Cursor
 
 [`adapters/cursor/executor-profile.cursor.json`](../adapters/cursor/executor-profile.cursor.json)
-uses:
+uses a 1,800-second (30-minute) profile cap and:
 
 ```text
 agent --print --output-format stream-json --sandbox enabled --trust
@@ -87,7 +91,8 @@ agent --print --output-format stream-json --sandbox enabled --trust
 The prompt is supplied as one argv value because Cursor's `agent --print`
 interface accepts a prompt argument. The profile does not add `--force` or
 `--yolo`; the operator must explicitly decide how the installed Cursor CLI
-handles writes in the selected worktree.
+handles writes in the selected worktree. A job may request a shorter timeout,
+but the runner never lets a job exceed this profile cap.
 
 ### agy
 
@@ -131,7 +136,11 @@ bash tools/cmux-agent-setup.sh --profile cursor --apply
 bash tools/cmux-agent-setup.sh --profile cursor --check
 ```
 
-Use `--profile agy` or `--profile both` for the other template. Setup creates
-only selected profile/runtime/bin directories and files; it does not
-edit Cursor/agy hooks, shell startup files, credentials, or timeline state.
-`--check` never writes.
+Use `--profile agy` or `--profile both` for the other template. Setup creates only selected profile/runtime/bin directories and files; with
+no environment overrides, the runner is installed at
+`$HOME/.config/cmux-agent/bin/cmux-agent-run.py`, profiles at
+`$HOME/.config/cmux-agent/profiles/<profile-id>.json`, and job evidence under
+`$HOME/.local/state/cmux-agent/jobs/<job_nonce>/`. It does not edit Cursor/agy
+hooks, shell startup files, credentials, or timeline state. `--check` never
+writes. The runner's `--profile` argument is the resolved JSON path, not the
+bare profile ID.
