@@ -7,13 +7,26 @@ index="$root/docs/index.md"
 design="$root/docs/headless-executor.md"
 
 [[ -s "$skill" && -s "$index" && -s "$design" ]]
+routing_docs=(
+  "$skill"
+  "$index"
+  "$root/docs/executor-profiles.md"
+  "$root/docs/headless-executor.md"
+  "$root/README.md"
+)
 
 for contract in \
   'mode: headless' \
   'launch.input' \
   'cmux-agent' \
   'cmux-workspace' \
-  'cmux new-pane --workspace' \
+  'cmux new-split right --workspace <caller-workspace> --surface <caller-surface> --focus false' \
+  'CMUX_WORKSPACE_ID' \
+  'CMUX_SURFACE_ID' \
+  'caller workspace' \
+  'executor pane' \
+  'surface_refs' \
+  'surface_ids' \
   'project name and next serial ordinal' \
   'shell=False' \
   'process-group' \
@@ -38,6 +51,15 @@ for contract in \
   grep -Fq -- "$contract" "$skill"
 done
 
+routing_section=$(awk '
+  /^3\. Use the existing / { capture = 1 }
+  /^4\. Initialize the executor/ { capture = 0 }
+  capture { print }
+' "$skill")
+printf '%s\n' "$routing_section" | grep -Fq -- 'If a supplied anchor is present but verification fails'
+printf '%s\n' "$routing_section" | grep -Eq -- 'do not fall[[:space:]]+back to `identify`'
+printf '%s\n' "$routing_section" | grep -Fq -- 'cmux new-split right --workspace <caller-workspace> --surface <caller-surface> --focus false'
+
 for obsolete in \
   'cursor-transcript-bridge' \
   'cursor-result-watcher' \
@@ -47,8 +69,19 @@ for obsolete in \
   'cmux-agent.timeline' \
   'tools/cmux-agent-timeline.py' \
   'cursor-hooks.json'; do
-  if grep -RIn --exclude-dir=.git -- "$obsolete" "$skill" "$index"; then
+  if grep -In -- "$obsolete" "$skill" "$index"; then
     echo "obsolete interactive reference found: $obsolete" >&2
+    exit 1
+  fi
+done
+
+for obsolete in \
+  'workspace named `cmux-agent`' \
+  'cmux-agent-workspace' \
+  'cmux new-pane --workspace' \
+  'cmux new-workspace'; do
+  if grep -In -- "$obsolete" "${routing_docs[@]}"; then
+    echo "obsolete routing reference found: $obsolete" >&2
     exit 1
   fi
 done

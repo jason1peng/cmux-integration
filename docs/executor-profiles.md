@@ -120,11 +120,14 @@ The result manifest contains identity, task/output
 hashes, timestamps, duration, exit code, timeout state, and marker observation;
 it does not contain task text.
 
-The worker uses the official `cmux` and `cmux-workspace` skills to create a new
-surface in the shared `cmux-agent` workspace and invokes the runner there. The
-surface is explicitly addressed by workspace and surface ID, but screen output
-is not parsed as a result. The calling agent independently verifies the actual
-worktree and declared checks.
+The worker uses the official `cmux` and `cmux-workspace` skills to resolve the
+invoking caller's workspace and surface, then creates one fresh terminal pane
+beside the caller with `cmux new-split right --workspace <caller-workspace>
+--surface <caller-surface> --focus false`. It invokes the runner on the new
+surface in that same workspace and resolves its pane by matching the surface
+in `list-panes` output. The workspace and surface are explicitly addressed,
+but screen output is not parsed as a result. The calling agent independently
+verifies the actual worktree and declared checks.
 
 ## Setup
 

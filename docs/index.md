@@ -45,8 +45,9 @@ skill and its process runner. Before changing it:
    review task.
 3. The host loads `.agents/skills/cmux-agent` (or passes its `SKILL.md`
    explicitly), then the worker uses the official `cmux` and `cmux-workspace`
-   skills, reuses the exact `cmux-agent` workspace, creates a fresh surface,
-   and launches only the selected headless profile.
+   skills, resolves the invoking caller's workspace/surface, creates one fresh
+   pane beside that surface in the same workspace, and launches only the
+   selected headless profile.
 4. The runner captures process evidence without parsing provider transcripts or
    screen text.
 5. The worker checks declared artifacts and focused checks, then reports paths
