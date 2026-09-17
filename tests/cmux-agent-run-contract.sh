@@ -109,6 +109,10 @@ assert value["job_nonce"] == str(nonce), value
 assert value["workspace"] == "workspace-fixture", value
 assert value["surface"] == "surface-fixture", value
 assert value["marker_observed"] is True, value
+assert value["timeout_seconds"] == 5, value
+assert isinstance(value["deadline_at_ns"], int) and value["deadline_at_ns"] > value["started_at_ns"], value
+assert value["deadline_at_ns"] == value["started_at_ns"] + 5_000_000_000, value
+assert value["stop_deadline_seconds"] == 1, value
 assert value["sandbox"] == "enabled", value
 assert value["network"] == "disabled", value
 assert value["write_scope"] == ["cwd"], value
@@ -120,6 +124,8 @@ assert arguments[0] == "--write-arg"
 assert arguments[1].startswith("literal;$(touch ") and arguments[1].endswith("/injected)")
 assert not (args_path.parent / "injected").exists(), "argv was evaluated by a shell"
 PY
+python3 "$root/tools/cmux-agent-wait.py" --result-path "$job/result.json" \
+  --job-nonce "$nonce" --poll-interval-seconds 0.01 --safety-margin-seconds 0
 
 # Prompt-argument profiles receive the whole task as one argv value.
 python3 - "$sandbox/profile.json" "$sandbox/prompt-arg.json" <<'PY'
@@ -262,6 +268,42 @@ import sys
 value = json.load(open(sys.argv[1]))
 assert value["status"] == "timed_out", value
 assert value["timed_out"] is True, value
+assert value["deadline_at_ns"] == value["started_at_ns"] + 100_000_000, value
+assert value["stop_deadline_seconds"] == 0.1, value
+PY
+
+# The initial runner-owned manifest is published before process launch and
+# carries the same timing identity as the final atomic terminal transition.
+initial_job="$sandbox/jobs/run-contract-initial"
+set +e
+python3 "$runner" --profile "$sandbox/slow.json" --task-file "$sandbox/task.txt" --job-dir "$initial_job" --job-nonce run-contract-initial --workspace workspace-fixture --surface surface-fixture --cwd "$sandbox/work tree" >"$sandbox/initial.out" 2>"$sandbox/initial.err" &
+runner_pid=$!
+set -e
+for _ in $(seq 1 50); do
+  [[ -f "$initial_job/result.json" ]] && break
+  sleep 0.01
+done
+python3 - "$initial_job/result.json" <<'PY'
+import json
+import sys
+value = json.load(open(sys.argv[1]))
+assert value["status"] in {"starting", "running"}, value
+assert value["timeout_seconds"] == 0.1, value
+assert value["deadline_at_ns"] == value["started_at_ns"] + 100_000_000, value
+assert value["stop_deadline_seconds"] == 0.1, value
+PY
+set +e
+wait "$runner_pid"
+status=$?
+set -e
+[[ "$status" -eq 124 ]]
+python3 - "$initial_job/result.json" <<'PY'
+import json
+import sys
+value = json.load(open(sys.argv[1]))
+assert value["status"] == "timed_out", value
+assert value["deadline_at_ns"] == value["started_at_ns"] + 100_000_000, value
+assert value["stop_deadline_seconds"] == 0.1, value
 PY
 
 echo "cmux-agent-run contract: PASS"

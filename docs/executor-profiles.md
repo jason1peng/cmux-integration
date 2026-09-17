@@ -63,7 +63,9 @@ installed CLI or accepts a command from task text.
 
 The runner validates this contract before launching. For `stream-json`
 profiles, completion markers are searched only in assistant-authored text
-events, not the echoed user prompt.
+events, not the echoed user prompt. The runner writes additive timing metadata
+(`timeout_seconds`, `deadline_at_ns`, and `stop_deadline_seconds`) in both its
+initial and final manifests.
 
 - executable and argv come only from the profile;
 - mode is `headless` and input is `stdin` or `prompt-arg`;
@@ -116,9 +118,22 @@ out of Git if it contains private paths or local policy.
 `${CMUX_AGENT_CONFIG}/bin/cmux-agent-run.py`. It uses `shell=False`, passes the
 private task file using the profile's input mode, mirrors output to the pane,
 captures raw `stdout.log`/`stderr.log`, and writes `result.json` atomically.
-The result manifest contains identity, task/output
-hashes, timestamps, duration, exit code, timeout state, and marker observation;
-it does not contain task text.
+The result manifest contains identity, task/output hashes, timestamps, duration,
+exit code, timeout state, marker observation, and the effective timeout/deadline
+and process-stop grace metadata; it does not contain task text.
+
+`tools/cmux-agent-wait.py` is installed beside the runner. Invoke it with an
+explicit `--result-path <job-dir>/result.json` and `--job-nonce`, plus bounded
+`--poll-interval-seconds` and `--safety-margin-seconds` values. It reads only
+that atomically replaced manifest, rejects malformed/unknown/stale/mismatched
+evidence, treats `starting` and `running` as non-terminal, and accepts only
+`completed`, `failed`, `timed_out`, and `cancelled` as terminal. The wait fence
+is `deadline_at_ns + stop_deadline_seconds + safety margin`. A non-terminal job
+is reported incomplete after the fence; the waiter never terminates a process
+or converts incomplete evidence into a terminal status. Its exit code is `0`
+when any terminal manifest is observed, `1` for incomplete/missing evidence,
+and `2` for malformed, stale, or mismatched input; the JSON output always
+carries the bounded observed status and result path.
 
 The worker uses the official `cmux` and `cmux-workspace` skills to resolve the
 invoking caller's workspace and surface, then creates one fresh terminal pane
@@ -140,8 +155,9 @@ bash tools/cmux-agent-setup.sh --profile cursor --check
 ```
 
 Use `--profile agy` or `--profile both` for the other template. Setup creates only selected profile/runtime/bin directories and files; with
-no environment overrides, the runner is installed at
-`$HOME/.config/cmux-agent/bin/cmux-agent-run.py`, profiles at
+no environment overrides, the runner and waiter are installed at
+`$HOME/.config/cmux-agent/bin/cmux-agent-run.py` and
+`$HOME/.config/cmux-agent/bin/cmux-agent-wait.py`, profiles at
 `$HOME/.config/cmux-agent/profiles/<profile-id>.json`, and job evidence under
 `$HOME/.local/state/cmux-agent/jobs/<job_nonce>/`. It does not edit Cursor/agy
 hooks, shell startup files, credentials, or timeline state. `--check` never

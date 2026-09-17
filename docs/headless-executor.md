@@ -68,6 +68,11 @@ A profile is machine-local JSON under
 - output format and the completion-marker rule;
 - a finite timeout and process-group stop deadline.
 
+The runner retains the effective `timeout_seconds` and writes additive
+`deadline_at_ns` and `stop_deadline_seconds` fields into both the initial and
+final runner-owned manifests. `deadline_at_ns` is derived from the effective
+job timeout; it is not task or provider data.
+
 The runner starts the command without a shell, passes the private task file
 using the profile's stdin or prompt-argument mode, mirrors output to the cmux
 surface while capturing it, and writes this machine-local job layout:
@@ -81,10 +86,18 @@ $CMUX_AGENT_RUNTIME/jobs/<job_nonce>/
 ```
 
 `result.json` records identity, timestamps, duration, exit status, timeout and
-termination state, task/output hashes, and whether the expected marker was
-observed. It never stores the task text. A successful process and marker do not
-prove the task: the worker and calling agent must inspect the expected artifact
-and run focused checks.
+termination state, task/output hashes, marker observation, and the effective
+runner timing metadata. It never stores the task text. The standalone
+`tools/cmux-agent-wait.py` is installed beside the runner and atomically polls
+only this manifest with an explicit result path and expected job nonce. It
+accepts `completed`, `failed`, `timed_out`, and `cancelled` as terminal, keeps
+`starting` and `running` non-terminal, and waits through
+`deadline_at_ns + stop_deadline_seconds + safety margin`. Malformed, unknown,
+stale, or mismatched manifests fail closed. A non-terminal job is reported
+incomplete after the fence; the waiter never terminates a process or infers a
+terminal status. A successful process and marker do not prove the task: the
+worker and calling agent must inspect the expected artifact and run focused
+checks.
 
 ## Safety boundary
 
@@ -92,8 +105,11 @@ Profile selection is explicit. Task text cannot supply a command, argv, profile,
 permission flag, network target, credential, or write scope. The runner uses
 `subprocess` with `shell=False`, starts a separate process group, and enforces
 the bounded timeout; a job may impose a shorter deadline than the profile
-maximum. A profile that enables dangerous behavior must declare it;
-the supervisor never adds force/yolo/dangerous flags.
+maximum. The runner owns process-group termination; the waiter owns polling,
+identity, and the deadline + stop-grace + margin fence. Normal supervision does
+not cancel a healthy job when a poll interval elapses. A profile that enables
+dangerous behavior must declare it; the supervisor never adds
+force/yolo/dangerous flags.
 
 Headless CLIs may not offer interactive approval prompts. If the selected
 profile cannot safely express the requested task, or the output reports an
@@ -103,8 +119,15 @@ agent instead of guessing.
 ## Verification
 
 The worker reports the result manifest, captured output paths/hashes, cmux
-workspace/surface, artifact evidence, and focused-check exit codes. The calling
-agent independently reviews the worktree and repeats the important checks.
+workspace/surface, artifact evidence, and focused-check exit codes. The
+Cursor profile keeps its full 1,800-second cap; the finalization reserve belongs
+to the outer worker deadline rather than shortening that profile cap. Before
+that outer deadline it reserves the final 2–5 minutes for a durable
+finalization checkpoint containing the result path/status, artifact/check evidence,
+hashes or a bounded file list, canonical cwd/worktree identity, and direct
+`git status`/diff evidence. After that checkpoint it stops exploratory calls
+and only reports or escalates. The calling agent independently reviews the
+worktree and repeats the important checks.
 
 No transcript scan or timeline view is required for this path. A future
 multi-step orchestration requirement may add a small structured event log, but

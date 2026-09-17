@@ -30,8 +30,9 @@ bash tools/cmux-agent-setup.sh --profile cursor --check
 ```
 
 Use `--profile agy` or `--profile both` to install the corresponding profile
-templates. With the default locations, this installs the runner at
-`$HOME/.config/cmux-agent/bin/cmux-agent-run.py` and Cursor at
+templates. With the default locations, this installs the runner and result
+waiter at `$HOME/.config/cmux-agent/bin/cmux-agent-run.py` and
+`$HOME/.config/cmux-agent/bin/cmux-agent-wait.py`, and Cursor at
 `$HOME/.config/cmux-agent/profiles/cursor.json`; the setup plan prints the
 selected path and profile timeout. Setup never edits shell startup files,
 Cursor/agy hooks, credentials, transcripts, or timeline files.
@@ -47,6 +48,7 @@ cmux-agent skill + worker
     ├── creates a fresh project-labelled pane beside the caller
     ├── launches a profile-selected headless CLI through cmux-agent-run.py
     ├── captures stdout/stderr and runner metadata
+    ├── waits on result.json through the deadline/grace fence
     └── checks declared artifacts and focused checks
     │ reports evidence
     ▼
@@ -75,7 +77,16 @@ $CMUX_AGENT_RUNTIME/jobs/<job_nonce>/
 `result.json` is runner-owned metadata. It records the profile/job identity,
 workspace/surface, canonical cwd, timestamps, duration, child exit code,
 timeout/termination state, task/output hashes, and whether the nonce-framed
-completion marker was observed. It does not store task text.
+completion marker was observed. It also retains the effective
+`timeout_seconds`, additive `deadline_at_ns`, and process-stop
+`stop_deadline_seconds` timing fields. It does not store task text.
+
+The standalone `tools/cmux-agent-wait.py` (installed beside the runner) polls
+only this atomically replaced manifest using an explicit result path and job
+nonce. It recognizes `starting`/`running` as non-terminal and only
+`completed`/`failed`/`timed_out`/`cancelled` as terminal. Its fence is the
+runner deadline plus stop grace plus an explicit safety margin; it reports
+incomplete evidence after that fence without cancelling the process.
 
 A successful process or marker is not enough. The worker checks the expected
 artifact and focused checks, and the calling agent independently reviews the
@@ -93,7 +104,11 @@ machine-local.
   runner never adds those flags.
 - Cwd and optional worktree identity are validated before launch.
 - The runner uses `subprocess` with `shell=False` and a separate process group.
-- Timeouts terminate the process group and preserve the captured evidence.
+- Timeouts terminate the process group and preserve the captured evidence;
+  the waiter waits through the deadline, process-stop grace, and safety margin.
+- Normal supervision never cancels a healthy job because a polling loop ended;
+  operator-directed cancellation is considered only after the fence and still
+  requires a terminal manifest or a missing-evidence report.
 - Approval/question/error/scope problems are reported to the calling agent
   rather than answered or approved by guesswork.
 - No Cursor transcript directory scanning, hook registration, screen scraping,
@@ -159,7 +174,8 @@ current tree.
 
 - `.agents/skills/cmux-agent/SKILL.md` — framework-neutral headless cmux worker workflow.
 - `tools/cmux-agent-run.py` — shell-free process runner and result manifest.
-- `tools/cmux-agent-setup.sh` — explicit plan/apply/check setup.
+- `tools/cmux-agent-wait.py` — atomic result poller and deadline/grace fence.
+- `tools/cmux-agent-setup.sh` — explicit plan/apply/check setup for the runner, waiter, and profiles.
 - `adapters/` — portable headless profile templates.
 - `docs/index.md` — documentation entry point.
 - `docs/headless-executor.md` — redesign decision and historical reference.
@@ -175,7 +191,7 @@ bash tests/executor-profile-contract.sh
 bash tests/cmux-agent-setup-contract.sh
 bash tests/cmux-agent-capability-protocol-contract.sh
 bash -n tools/cmux-agent-setup.sh tests/*.sh
-python3 -m py_compile tools/cmux-agent-run.py tools/cmux-agent-capability-protocol.py
+python3 -m py_compile tools/cmux-agent-run.py tools/cmux-agent-wait.py tools/cmux-agent-capability-protocol.py
 git diff --check
 ```
 

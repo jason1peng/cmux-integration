@@ -71,6 +71,8 @@ assert agy["launch"]["dangerous"] is False
 
 runner = root / "tools/cmux-agent-run.py"
 assert runner.is_file() and runner.stat().st_mode & 0o111
+waiter = root / "tools/cmux-agent-wait.py"
+assert waiter.is_file() and waiter.stat().st_mode & 0o111
 for removed in (
     "cursor-advisor.sh",
     "cursor-hooks.json",
